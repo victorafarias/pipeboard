@@ -1,0 +1,42 @@
+services:
+  pipeboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeboard-mcp
+    restart: unless-stopped
+    environment:
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+    command:
+      - python
+      - -m
+      - meta_ads_mcp
+      - --transport
+      - streamable-http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pipeboard.rule=Host(`pipeboard.ovictorfarias.com.br`)"
+      - "traefik.http.routers.pipeboard.entrypoints=websecure"
+      - "traefik.http.routers.pipeboard.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.pipeboard.loadbalancer.server.port=8080"
+    networks:
+      - root_default
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),2); s.close()\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  root_default:
+    external: true

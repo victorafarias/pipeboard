@@ -21,5 +21,7 @@ RUN uv pip install --system -r requirements.txt
 # Copy the rest of the application
 COPY . .
 
-# Command to run the Meta Ads MCP server
-CMD ["python", "-m", "meta_ads_mcp"] 
+EXPOSE 8080
+
+# Default: streamable HTTP transport for reverse-proxy / Traefik deployment
+CMD ["python", "-m", "meta_ads_mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8080"] 
