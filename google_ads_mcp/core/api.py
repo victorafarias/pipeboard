@@ -9,7 +9,7 @@ from . import auth
 from .auth import get_google_ads_config, is_configured
 from .utils import logger, normalize_customer_id
 
-GOOGLE_ADS_API_VERSION = os.environ.get("GOOGLE_ADS_API_VERSION", "v21")
+GOOGLE_ADS_API_VERSION = os.environ.get("GOOGLE_ADS_API_VERSION", "v25")
 
 
 class McpToolError(Exception):
