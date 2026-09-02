@@ -28,6 +28,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "pathlib>=1.0.1",
     "python-dateutil>=2.8.2",
+    "google-ads>=26.0.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
 ]
@@ -38,9 +39,11 @@ dependencies = [
 
 [project.scripts]
 meta-ads-mcp = "meta_ads_mcp:entrypoint"
+google-ads-mcp = "google_ads_mcp:entrypoint"
+tiktok-ads-mcp = "tiktok_ads_mcp:entrypoint"
 
 [tool.hatch.build.targets.wheel]
-packages = ["meta_ads_mcp"]
+packages = ["meta_ads_mcp", "google_ads_mcp", "tiktok_ads_mcp"]
 
 [tool.pytest.ini_options]
 markers = [

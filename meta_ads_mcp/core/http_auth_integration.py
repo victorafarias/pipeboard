@@ -269,6 +269,13 @@ class AuthInjectionMiddleware(BaseHTTPMiddleware):
         pipeboard_token = FastMCPAuthIntegration.extract_pipeboard_token_from_headers(dict(request.headers))
 
         if not auth_token:
+            # Cursor and other MCP clients often pass tokens as a URL query param.
+            query_token = request.query_params.get("token")
+            if query_token:
+                auth_token = query_token.strip()
+                logger.debug("Found token in URL query parameter")
+
+        if not auth_token:
             # A request must carry a primary access-token credential: an
             # Authorization: Bearer header, X-META-ACCESS-TOKEN, or
             # X-PIPEBOARD-API-TOKEN (all resolved by extract_token_from_headers).

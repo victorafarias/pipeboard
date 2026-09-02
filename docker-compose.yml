@@ -8,6 +8,7 @@ services:
     environment:
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
+      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN:-}
     command:
       - python
       - -m
@@ -24,6 +25,90 @@ services:
       - "traefik.http.routers.pipeboard.entrypoints=websecure"
       - "traefik.http.routers.pipeboard.tls.certresolver=mytlschallenge"
       - "traefik.http.services.pipeboard.loadbalancer.server.port=8080"
+    networks:
+      - root_default
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),2); s.close()\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  google-ads:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeboard-google-ads-mcp
+    restart: unless-stopped
+    environment:
+      GOOGLE_ADS_DEVELOPER_TOKEN: ${GOOGLE_ADS_DEVELOPER_TOKEN:-}
+      GOOGLE_ADS_CLIENT_ID: ${GOOGLE_ADS_CLIENT_ID:-}
+      GOOGLE_ADS_CLIENT_SECRET: ${GOOGLE_ADS_CLIENT_SECRET:-}
+      GOOGLE_ADS_REFRESH_TOKEN: ${GOOGLE_ADS_REFRESH_TOKEN:-}
+      GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${GOOGLE_ADS_LOGIN_CUSTOMER_ID:-}
+      GOOGLE_ADS_API_VERSION: ${GOOGLE_ADS_API_VERSION:-v21}
+      GOOGLE_ADS_DISABLE_CALLBACK_SERVER: "1"
+    command:
+      - python
+      - -m
+      - google_ads_mcp
+      - --transport
+      - streamable-http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.google-ads.rule=Host(`google-ads.ovictorfarias.com.br`)"
+      - "traefik.http.routers.google-ads.entrypoints=websecure"
+      - "traefik.http.routers.google-ads.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.google-ads.loadbalancer.server.port=8080"
+    networks:
+      - root_default
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),2); s.close()\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  tiktok-ads:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeboard-tiktok-ads-mcp
+    restart: unless-stopped
+    environment:
+      TIKTOK_APP_ID: ${TIKTOK_APP_ID:-}
+      TIKTOK_APP_SECRET: ${TIKTOK_APP_SECRET:-}
+      TIKTOK_ACCESS_TOKEN: ${TIKTOK_ACCESS_TOKEN:-}
+      TIKTOK_REFRESH_TOKEN: ${TIKTOK_REFRESH_TOKEN:-}
+      TIKTOK_ADS_DISABLE_CALLBACK_SERVER: "1"
+    command:
+      - python
+      - -m
+      - tiktok_ads_mcp
+      - --transport
+      - streamable-http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tiktok-ads.rule=Host(`tiktok-ads.ovictorfarias.com.br`)"
+      - "traefik.http.routers.tiktok-ads.entrypoints=websecure"
+      - "traefik.http.routers.tiktok-ads.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.tiktok-ads.loadbalancer.server.port=8080"
     networks:
       - root_default
     healthcheck:
