@@ -81,6 +81,46 @@ services:
       retries: 3
       start_period: 60s
 
+  google-analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeboard-google-analytics-mcp
+    restart: unless-stopped
+    environment:
+      GOOGLE_ANALYTICS_CLIENT_ID: ${GOOGLE_ANALYTICS_CLIENT_ID:-}
+      GOOGLE_ANALYTICS_CLIENT_SECRET: ${GOOGLE_ANALYTICS_CLIENT_SECRET:-}
+      GOOGLE_ANALYTICS_REFRESH_TOKEN: ${GOOGLE_ANALYTICS_REFRESH_TOKEN:-}
+      GOOGLE_ANALYTICS_DISABLE_CALLBACK_SERVER: "1"
+    command:
+      - python
+      - -m
+      - google_analytics_mcp
+      - --transport
+      - streamable-http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.google-analytics.rule=Host(`google-analytics.ovictorfarias.com.br`)"
+      - "traefik.http.routers.google-analytics.entrypoints=websecure"
+      - "traefik.http.routers.google-analytics.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.google-analytics.loadbalancer.server.port=8080"
+    networks:
+      - root_default
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),2); s.close()\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   tiktok-ads:
     build:
       context: .
