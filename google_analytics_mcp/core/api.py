@@ -191,4 +191,10 @@ def ga_api_tool(func: Callable):
             logger.error(f"Google Analytics tool error in {func.__name__}: {e}", exc_info=True)
             return json.dumps({"error": {"message": str(e)}}, indent=2)
 
+    # ga_api_tool always serializes tool output to JSON text; keep FastMCP's output
+    # schema aligned so structured validation does not expect list/dict objects.
+    wrapper.__annotations__ = {
+        **getattr(func, "__annotations__", {}),
+        "return": str,
+    }
     return wrapper

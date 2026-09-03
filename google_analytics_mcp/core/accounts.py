@@ -15,7 +15,7 @@ from .utils import construct_property_rn
 
 @mcp_server.tool()
 @ga_api_tool
-async def get_account_summaries(access_token: Optional[str] = None) -> List[Dict[str, Any]]:
+async def get_account_summaries(access_token: Optional[str] = None) -> str:
     """Retrieves information about the user's Google Analytics accounts and properties."""
 
     def _sync_call():
@@ -30,7 +30,7 @@ async def get_account_summaries(access_token: Optional[str] = None) -> List[Dict
 async def get_property_details(
     property_id: Union[int, str],
     access_token: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> str:
     """Returns details about a Google Analytics property.
 
     Args:
@@ -54,7 +54,7 @@ async def get_property_details(
 async def list_google_ads_links(
     property_id: Union[int, str],
     access_token: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> str:
     """Returns a list of links to Google Ads accounts for a property.
 
     Args:
@@ -78,7 +78,7 @@ async def list_google_ads_links(
 async def list_property_annotations(
     property_id: Union[int, str],
     access_token: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> str:
     """Returns annotations for a property.
 
     Annotations are a feature that allows you to leave notes on GA4 for specific

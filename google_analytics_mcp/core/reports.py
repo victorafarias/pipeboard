@@ -157,7 +157,7 @@ async def run_report(
     currency_code: Optional[str] = None,
     return_property_quota: bool = False,
     access_token: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> str:
     """Runs a Google Analytics Data API report."""
     from google.analytics import data_v1beta
 
@@ -202,7 +202,7 @@ async def run_realtime_report(
     offset: Optional[int] = None,
     return_property_quota: bool = False,
     access_token: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> str:
     """Runs a Google Analytics Data API realtime report."""
     from google.analytics import data_v1beta
 
@@ -236,7 +236,7 @@ async def run_realtime_report(
 async def get_custom_dimensions_and_metrics(
     property_id: Union[int, str],
     access_token: Optional[str] = None,
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> str:
     """Returns the property's custom dimensions and metrics.
 
     Args:

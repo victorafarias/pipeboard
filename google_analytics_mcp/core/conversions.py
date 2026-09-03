@@ -120,7 +120,7 @@ async def run_conversions_report(
     currency_code: Optional[str] = None,
     return_property_quota: bool = False,
     access_token: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> str:
     """Runs a Google Analytics Data API conversions report."""
     from google.analytics import data_v1alpha
 
