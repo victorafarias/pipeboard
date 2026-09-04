@@ -100,7 +100,7 @@ async def run_funnel_report(
     segments: Optional[List[Dict[str, Any]]] = None,
     return_property_quota: bool = False,
     access_token: Optional[str] = None,
-) -> str:
+) -> Dict[str, Any]:
     """Run a Google Analytics Data API funnel report."""
     from google.analytics import data_v1alpha
 

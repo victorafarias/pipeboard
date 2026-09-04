@@ -1,8 +1,23 @@
-"""Ensure Google Analytics MCP tools expose string output schemas."""
+"""Google Analytics MCP tools must put parsed JSON in structuredContent.result."""
 
 import json
 
 import pytest
+from mcp.types import CallToolResult, TextContent
+
+
+SAMPLE_ACCOUNTS = [
+    {
+        "account": "accounts/76191805",
+        "display_name": "Victor Farias",
+        "property_summaries": [
+            {
+                "property": "properties/501646837",
+                "display_name": "jeronimo.app.br",
+            }
+        ],
+    }
+]
 
 
 def _get_tool(name: str):
@@ -14,41 +29,74 @@ def _get_tool(name: str):
     return manager.get_tool(name)
 
 
-def test_get_account_summaries_output_schema_is_string():
+def test_json_call_tool_result_list_is_not_stringified():
+    from google_analytics_mcp.core.api import json_call_tool_result
+
+    result = json_call_tool_result(SAMPLE_ACCOUNTS, list_result=True)
+
+    assert isinstance(result.structuredContent["result"], list)
+    assert result.structuredContent["result"][0]["account"] == "accounts/76191805"
+    assert json.loads(result.content[0].text) == SAMPLE_ACCOUNTS
+
+
+def test_json_call_tool_result_parses_json_text():
+    from google_analytics_mcp.core.api import json_call_tool_result
+
+    dumped = json.dumps(SAMPLE_ACCOUNTS, indent=2)
+    result = json_call_tool_result(dumped, list_result=True)
+
+    assert result.content[0].text == dumped
+    assert isinstance(result.structuredContent["result"], list)
+    assert result.structuredContent["result"] == SAMPLE_ACCOUNTS
+
+
+def test_get_account_summaries_schema_result_is_array():
     from google_analytics_mcp.core import accounts  # noqa: F401
 
     tool = _get_tool("get_account_summaries")
     schema = tool.output_schema
     assert schema is not None
-    assert schema["properties"]["result"]["type"] == "string"
+    assert schema["properties"]["result"]["type"] == "array"
 
-    sample = json.dumps([{"account": "accounts/1", "display_name": "Test"}], indent=2)
-    converted = tool.fn_metadata.convert_result(sample)
-    assert converted is not None
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "get_property_details",
-        "list_google_ads_links",
-        "list_property_annotations",
-        "run_report",
-        "run_realtime_report",
-        "get_custom_dimensions_and_metrics",
-        "run_funnel_report",
-        "run_conversions_report",
-    ],
-)
-def test_ga_api_tools_use_string_output_schema(tool_name: str):
-    from google_analytics_mcp.core import (  # noqa: F401
-        accounts,
-        conversions,
-        funnel,
-        reports,
+    payload = CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(SAMPLE_ACCOUNTS, indent=2))],
+        structuredContent={"result": SAMPLE_ACCOUNTS},
     )
+    converted = tool.fn_metadata.convert_result(payload)
+    assert isinstance(converted, CallToolResult)
+    assert isinstance(converted.structuredContent["result"], list)
+    assert json.loads(converted.content[0].text) == SAMPLE_ACCOUNTS
 
-    tool = _get_tool(tool_name)
-    schema = tool.output_schema
-    assert schema is not None
-    assert schema["properties"]["result"]["type"] == "string"
+
+def test_get_account_summaries_rejects_stringified_result():
+    from google_analytics_mcp.core import accounts  # noqa: F401
+    from pydantic import ValidationError
+
+    tool = _get_tool("get_account_summaries")
+    dumped = json.dumps(SAMPLE_ACCOUNTS, indent=2)
+    payload = CallToolResult(
+        content=[TextContent(type="text", text=dumped)],
+        structuredContent={"result": dumped},
+    )
+    with pytest.raises(ValidationError):
+        tool.fn_metadata.convert_result(payload)
+
+
+@pytest.mark.asyncio
+async def test_ga_api_tool_list_survives_fastmcp_convert_result(monkeypatch):
+    from google_analytics_mcp.core import accounts  # noqa: F401
+    from google_analytics_mcp.core import api as ga_api
+
+    monkeypatch.setattr(ga_api, "is_configured", lambda token=None: True)
+
+    @ga_api.ga_api_tool
+    async def fake_summaries(access_token=None) -> list[dict]:
+        return SAMPLE_ACCOUNTS
+
+    raw = await fake_summaries()
+    assert isinstance(raw.structuredContent["result"], list)
+
+    converted = _get_tool("get_account_summaries").fn_metadata.convert_result(raw)
+    assert isinstance(converted.structuredContent["result"], list)
+    assert converted.structuredContent["result"][0]["display_name"] == "Victor Farias"
+    assert json.loads(converted.content[0].text)[0]["account"] == "accounts/76191805"

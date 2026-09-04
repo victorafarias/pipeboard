@@ -5,10 +5,12 @@ reports is adapted from the official Google Analytics MCP (Apache-2.0):
 https://github.com/googleanalytics/google-analytics-mcp
 """
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, get_origin
 import asyncio
 import functools
 import json
+
+from mcp.types import CallToolResult, TextContent
 
 from . import auth
 from .auth import GOOGLE_AUTH_SCOPE, get_google_analytics_config, is_configured
@@ -138,25 +140,67 @@ async def run_sync(func, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
 
 
-def auth_required_payload() -> str:
-    return json.dumps(
-        {
-            "error": {
-                "message": "Authentication Required",
-                "details": {
-                    "description": "Google Analytics credentials are missing.",
-                    "required_env": [
-                        "GOOGLE_ANALYTICS_CLIENT_ID",
-                        "GOOGLE_ANALYTICS_CLIENT_SECRET",
-                        "GOOGLE_ANALYTICS_REFRESH_TOKEN",
-                    ],
-                    "http": "Pass the refresh token as Authorization: Bearer <token> or ?token=",
-                    "action_required": "Call get_login_link or set GOOGLE_ANALYTICS_REFRESH_TOKEN",
-                },
-            }
-        },
-        indent=2,
+def auth_required_payload() -> dict[str, Any]:
+    return {
+        "error": {
+            "message": "Authentication Required",
+            "details": {
+                "description": "Google Analytics credentials are missing.",
+                "required_env": [
+                    "GOOGLE_ANALYTICS_CLIENT_ID",
+                    "GOOGLE_ANALYTICS_CLIENT_SECRET",
+                    "GOOGLE_ANALYTICS_REFRESH_TOKEN",
+                ],
+                "http": "Pass the refresh token as Authorization: Bearer <token> or ?token=",
+                "action_required": "Call get_login_link or set GOOGLE_ANALYTICS_REFRESH_TOKEN",
+            },
+        }
+    }
+
+
+def _parse_json_payload(value: Any) -> Any:
+    """Keep native lists/dicts; parse JSON text so structuredContent is not a string."""
+    if isinstance(value, (list, dict)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def json_call_tool_result(value: Any, *, list_result: bool = False) -> CallToolResult:
+    """Text in content stays JSON; structuredContent.result is the parsed value.
+
+    FastMCP wraps list/dict annotations as ``{"result": ...}``. Clients that
+    require ``result`` to be an array reject a second ``json.dumps`` pass.
+    """
+    parsed = _parse_json_payload(value)
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(parsed, indent=2)
+
+    if list_result:
+        structured = {"result": parsed if isinstance(parsed, list) else []}
+        is_error = not isinstance(parsed, list)
+    elif isinstance(parsed, dict):
+        structured = parsed
+        is_error = False
+    else:
+        structured = {"result": parsed}
+        is_error = False
+
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent=structured,
+        isError=is_error,
     )
+
+
+def _return_annotation_is_list(func: Callable) -> bool:
+    return get_origin(getattr(func, "__annotations__", {}).get("return")) is list
 
 
 def ga_api_tool(func: Callable):
@@ -164,6 +208,7 @@ def ga_api_tool(func: Callable):
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
+        list_result = _return_annotation_is_list(func)
         try:
             if not kwargs.get("access_token"):
                 token = await auth.get_current_access_token()
@@ -171,30 +216,21 @@ def ga_api_tool(func: Callable):
                     kwargs["access_token"] = token
             if not is_configured(kwargs.get("access_token")):
                 logger.warning("Google Analytics is not fully configured")
-                return auth_required_payload()
+                return json_call_tool_result(auth_required_payload(), list_result=list_result)
             result = await func(*args, **kwargs)
-            if isinstance(result, dict):
-                return json.dumps(result, indent=2)
-            if isinstance(result, str):
-                return result
-            if isinstance(result, list):
-                return json.dumps(result, indent=2)
-            return json.dumps({"data": result}, indent=2)
+            return json_call_tool_result(result, list_result=list_result)
         except McpToolError as e:
             message = str(e)
             try:
                 parsed = json.loads(message)
-                return json.dumps(parsed, indent=2)
             except Exception:
-                return json.dumps({"error": {"message": message}}, indent=2)
+                parsed = {"error": {"message": message}}
+            return json_call_tool_result(parsed, list_result=list_result)
         except Exception as e:
             logger.error(f"Google Analytics tool error in {func.__name__}: {e}", exc_info=True)
-            return json.dumps({"error": {"message": str(e)}}, indent=2)
+            return json_call_tool_result(
+                {"error": {"message": str(e)}},
+                list_result=list_result,
+            )
 
-    # ga_api_tool always serializes tool output to JSON text; keep FastMCP's output
-    # schema aligned so structured validation does not expect list/dict objects.
-    wrapper.__annotations__ = {
-        **getattr(func, "__annotations__", {}),
-        "return": str,
-    }
     return wrapper
