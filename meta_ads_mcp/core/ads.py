@@ -1707,6 +1707,113 @@ async def _fetch_video_thumbnail(vid_id: str, access_token: str) -> Optional[str
     return url
 
 
+def _carousel_call_to_action(
+    cta_type: Optional[str],
+    *,
+    lead_gen_form_id: Optional[str] = None,
+    phone_number: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build a Graph call_to_action object for carousel parent/card link_data."""
+    if not cta_type:
+        return None
+    if cta_type == "WHATSAPP_MESSAGE":
+        # Meta v24 rejects any value payload on WHATSAPP_MESSAGE (error 1815630).
+        return {"type": "WHATSAPP_MESSAGE"}
+    cta: Dict[str, Any] = {"type": cta_type}
+    value: Dict[str, Any] = {}
+    if lead_gen_form_id:
+        value["lead_gen_form_id"] = lead_gen_form_id
+    if phone_number:
+        value["link"] = f"tel:{phone_number}"
+    if value:
+        cta["value"] = value
+    return cta
+
+
+def _normalize_carousel_child_attachments(
+    cards: List[Any],
+    *,
+    default_link: Optional[str],
+    default_cta_type: Optional[str],
+    lead_gen_form_id: Optional[str],
+    phone_number: Optional[str],
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Validate carousel cards and map them to Graph ``link_data.child_attachments``.
+
+    Returns ``(normalized_cards, None)`` on success, or ``(None, error_message)``.
+    This is the real Meta carousel format — not FLEX / asset_feed_spec.
+    """
+    if not isinstance(cards, list):
+        return None, "child_attachments must be a list of carousel cards (objects)."
+    if len(cards) < 2:
+        return None, (
+            "Carousel requires 2-10 child_attachments. A single card is a single-image "
+            "ad — use image_hash instead."
+        )
+    if len(cards) > 10:
+        return None, (
+            "Carousel allows at most 10 child_attachments "
+            "(Meta multi_share_optimized limit)."
+        )
+
+    normalized: List[Dict[str, Any]] = []
+    for i, card in enumerate(cards):
+        if not isinstance(card, dict):
+            return None, (
+                f"child_attachments[{i}] must be an object with link and "
+                "image_hash (or picture / video_id)."
+            )
+        link = card.get("link") or default_link
+        if not link:
+            return None, (
+                f"child_attachments[{i}] is missing 'link'. Provide a per-card link "
+                "or a parent link_url that all cards can inherit."
+            )
+        image_hash = card.get("image_hash")
+        picture = card.get("picture")
+        video_id = card.get("video_id")
+        if video_id is not None and video_id != "":
+            video_id = str(video_id)
+        else:
+            video_id = None
+        if not image_hash and not picture and not video_id:
+            return None, (
+                f"child_attachments[{i}] needs image_hash, picture, or video_id. "
+                "image_hashes with FLEX/Dynamic Creative is not a carousel."
+            )
+        if video_id and not image_hash and not picture:
+            return None, (
+                f"child_attachments[{i}] has video_id but no thumbnail. "
+                "Meta requires image_hash or picture on video carousel cards."
+            )
+
+        out: Dict[str, Any] = {"link": link}
+        if image_hash:
+            out["image_hash"] = image_hash
+        if picture:
+            out["picture"] = picture
+        if video_id:
+            out["video_id"] = video_id
+        if card.get("name"):
+            out["name"] = card["name"]
+        if card.get("description") is not None and card.get("description") != "":
+            out["description"] = card["description"]
+        if card.get("image_crops"):
+            out["image_crops"] = card["image_crops"]
+        if isinstance(card.get("call_to_action"), dict):
+            out["call_to_action"] = card["call_to_action"]
+        else:
+            cta = _carousel_call_to_action(
+                card.get("call_to_action_type") or default_cta_type,
+                lead_gen_form_id=lead_gen_form_id,
+                phone_number=phone_number,
+            )
+            if cta:
+                out["call_to_action"] = cta
+        normalized.append(out)
+    return normalized, None
+
+
 @mcp_server.tool()
 @meta_api_tool
 async def create_ad_creative(
@@ -1743,13 +1850,20 @@ async def create_ad_creative(
     reminder_data: Optional[Dict[str, Any]] = None,
     videos: Optional[List[Dict[str, Any]]] = None,
     images: Optional[List[Dict[str, Any]]] = None,
+    child_attachments: Optional[List[Dict[str, Any]]] = None,
+    multi_share_optimized: Optional[bool] = None,
+    multi_share_end_card: Optional[bool] = None,
     facebook_branded_content: Optional[Dict[str, Any]] = None,
     instagram_branded_content: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Create a new ad creative using an uploaded image hash, video ID, or an existing post.
 
-    Supports six creative modes:
+    Supports seven creative modes:
+    - **Carousel (real Graph carousel)**: Pass child_attachments (2-10 cards). This is the only
+      mode that creates a swipeable carousel via object_story_spec.link_data.child_attachments.
+      image_hashes / FLEX / Dynamic Creative is NOT a carousel — Meta serves one image or A/B
+      variants, never carousel cards.
     - **Existing post**: Provide object_story_id (format: {page_id}_{post_id}) to promote an existing
       organic or published post. No image_hash or video_id required. Optionally combine with
       asset_customization_rules to attach a 9:16 video for Story/Reels placements.
@@ -1772,12 +1886,14 @@ async def create_ad_creative(
         access_token: Meta API access token (optional - will use cached token if not provided)
         name: Creative name
         page_id: Facebook Page ID (string or int; coerced to string)
-        link_url: Destination URL for the ad. Required unless using lead_gen_form_id or
-                 reminder_data — with one exception: if asset_customization_rules is also
-                 set, link_url is required even for Lead ads. Meta accepts the creative
-                 without link_urls but rejects the ad at create_ad time with error 1885800
-                 ("Asset Customization Ads require a link"). The URL is never shown to the
-                 user when lead_gen_form_id is set (the CTA opens the form), but Meta still
+        link_url: Destination URL for the ad. Required unless using lead_gen_form_id,
+                 reminder_data, object_story_id, or child_attachments that each include
+                 their own link (the first card link becomes the parent link). If
+                 asset_customization_rules is also set, link_url is required even for
+                 Lead ads. Meta accepts the creative without link_urls but rejects the
+                 ad at create_ad time with error 1885800 ("Asset Customization Ads
+                 require a link"). The URL is never shown to the user when
+                 lead_gen_form_id is set (the CTA opens the form), but Meta still
                  demands one be present on the creative. Pass any valid URL in that case
                  (e.g. the Facebook page URL or your site root).
         message: Single ad copy/text (cannot be used with messages)
@@ -1793,13 +1909,15 @@ async def create_ad_creative(
         descriptions: List of description variants for multi-variant copy testing (cannot be used with description).
                   Each entry can be a plain string, OR a dict {"text": "...", "adlabels": [{"name": "..."}]}
                   when used with asset_customization_rules that reference description_label.
-        image_hashes: List of image hashes for FLEX creatives (up to 10, cannot be used with image_hash or video_id).
-                     IMPORTANT: When optimization_type="DEGREES_OF_FREEDOM" (FLEX/Advantage+ mode),
-                     only ONE image is served at delivery time regardless of how many hashes you provide.
-                     The Meta API accepts multiple hashes without error and they all appear in
-                     asset_feed_spec, but Meta silently collapses to a single image at serving time.
-                     Use image_hashes with multiple entries only in non-DOF (regular dynamic creative)
-                     mode. In DOF mode, pass a single hash.
+        image_hashes: List of image hashes for FLEX/Dynamic Creative (up to 10, cannot be used with
+                     image_hash, video_id, or child_attachments).
+                     THIS IS NOT A CAROUSEL. When optimization_type="DEGREES_OF_FREEDOM"
+                     (FLEX/Advantage+ mode), only ONE image is served at delivery time regardless
+                     of how many hashes you provide. The Meta API accepts multiple hashes without
+                     error and they all appear in asset_feed_spec, but Meta silently collapses to a
+                     single image at serving time. Use image_hashes with multiple entries only in
+                     non-DOF (regular dynamic creative) mode. In DOF mode, pass a single hash.
+                     For a swipeable carousel (cards in Feed), use child_attachments instead.
         video_id: Meta video ID for video creatives (cannot be used with image_hash or image_hashes).
                   Upload a video first via the Meta API, then use the returned video ID here.
                   IMPORTANT: When also providing instagram_actor_id, both instagram_actor_id AND
@@ -1948,8 +2066,44 @@ async def create_ad_creative(
         images: List of image objects for placement asset customization (multiple images with
                    different aspect ratios). Each entry: {"image_hash": "...", "label": "my_label"}.
                    The "label" field is converted to adlabels for use with asset_customization_rules
-                   image_label references. Cannot be used with image_hash or image_hashes.
-                   Use with optimization_type="PLACEMENT" and asset_customization_rules.
+                   image_label references. Cannot be used with image_hash, image_hashes, or
+                   child_attachments. Use with optimization_type="PLACEMENT" and
+                   asset_customization_rules.
+        child_attachments: Real Meta carousel cards (2-10). This is the Graph
+                   ``object_story_spec.link_data.child_attachments`` field — the only format that
+                   renders as a swipeable carousel. Cannot be combined with image_hash,
+                   image_hashes, video_id, videos, images, object_story_id, headlines[],
+                   descriptions[], messages[], optimization_type, or asset_customization_rules.
+                   Each card is an object:
+                     - link (str): Destination URL for that card. Inherits parent link_url if omitted.
+                     - image_hash (str): Uploaded image hash (use upload_ad_image first).
+                     - picture (str): Public image URL, alternative to image_hash.
+                     - video_id (str): Optional video; Meta also requires image_hash or picture
+                       as the card thumbnail.
+                     - name (str): Card headline.
+                     - description (str): Card description (price, domain, etc.).
+                     - call_to_action_type (str): Per-card CTA; falls back to the parent
+                       call_to_action_type.
+                     - call_to_action (dict): Raw Graph CTA object; overrides call_to_action_type.
+                     - image_crops (dict): Optional per-card crop boxes.
+                   Parent-level message is required (primary text above the cards). Parent
+                   link_url is required unless every card supplies its own link (then the first
+                   card link is used as the parent link). Parent headline/description/caption
+                   and call_to_action_type apply to the post, not as extra cards.
+                   Example:
+                   [
+                     {"link": "https://example.com/p1", "image_hash": "<hash1>",
+                      "name": "Product 1", "description": "$8.99"},
+                     {"link": "https://example.com/p2", "image_hash": "<hash2>",
+                      "name": "Product 2", "description": "$9.99"},
+                     {"link": "https://example.com/p3", "image_hash": "<hash3>",
+                      "name": "Product 3"}
+                   ]
+        multi_share_optimized: Carousel-only. If true (Meta default), Meta may reorder cards
+                   and allow up to 10 attachments. If false, card order is fixed and Meta
+                   accepts 2-5 cards.
+        multi_share_end_card: Carousel-only. If false, hides the end card that shows the
+                   Page icon. Meta default is true.
         reminder_data: Inline reminder event data for Instagram Reminder Ads
                       (REMINDERS_SET optimization goal). Placed in
                       object_story_spec.link_data.reminder_data. Use this instead of
@@ -2040,6 +2194,19 @@ async def create_ad_creative(
         except (json.JSONDecodeError, TypeError):
             pass
 
+    if isinstance(child_attachments, str):
+        try:
+            _parsed = json.loads(child_attachments)
+            if isinstance(_parsed, list):
+                child_attachments = _parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if isinstance(multi_share_optimized, str):
+        multi_share_optimized = multi_share_optimized.strip().lower() in ("true", "1", "yes")
+    if isinstance(multi_share_end_card, str):
+        multi_share_end_card = multi_share_end_card.strip().lower() in ("true", "1", "yes")
+
     if isinstance(facebook_branded_content, str):
         try:
             _parsed = json.loads(facebook_branded_content)
@@ -2082,10 +2249,11 @@ async def create_ad_creative(
 
     logger.debug(
         "create_ad_creative called: image_hash=%s, image_hashes=%s(%s), video_id=%s, "
-        "messages=%s, headlines=%s, descriptions=%s, optimization_type=%s",
+        "child_attachments=%s, messages=%s, headlines=%s, descriptions=%s, optimization_type=%s",
         type(image_hash).__name__,
         type(image_hashes).__name__, image_hashes,
         video_id,
+        len(child_attachments) if child_attachments else None,
         type(messages).__name__,
         type(headlines).__name__,
         type(descriptions).__name__,
@@ -2094,12 +2262,51 @@ async def create_ad_creative(
 
     # Validate media mutual exclusivity: exactly one media source allowed
     # (object_story_id is an alternative media source — it references an existing post)
-    media_params = sum(1 for x in [image_hash, image_hashes, video_id, videos, images] if x)
+    media_params = sum(
+        1 for x in [image_hash, image_hashes, video_id, videos, images, child_attachments] if x
+    )
     if media_params > 1:
-        return json.dumps({"error": "Only one media source allowed. Use 'image_hash' for a single image, 'image_hashes' for multiple images, 'video_id' for a single video, 'videos' for multiple videos with placement labels, or 'images' for multiple images with placement labels."}, indent=2)
+        return json.dumps({"error": "Only one media source allowed. Use 'image_hash' for a single image, 'image_hashes' for multiple images (FLEX/Dynamic Creative, not a carousel), 'video_id' for a single video, 'videos'/'images' for placement labels, or 'child_attachments' for a real carousel."}, indent=2)
 
     if media_params == 0 and not object_story_id:
-        return json.dumps({"error": "No media provided. Specify 'image_hash', 'image_hashes', 'video_id', 'videos', 'images', or 'object_story_id'."}, indent=2)
+        return json.dumps({"error": "No media provided. Specify 'image_hash', 'image_hashes', 'video_id', 'videos', 'images', 'child_attachments', or 'object_story_id'."}, indent=2)
+
+    if child_attachments:
+        incompatible = []
+        if object_story_id:
+            incompatible.append("object_story_id")
+        if headlines:
+            incompatible.append("headlines")
+        if descriptions:
+            incompatible.append("descriptions")
+        if messages:
+            incompatible.append("messages")
+        if optimization_type:
+            incompatible.append("optimization_type")
+        if asset_customization_rules:
+            incompatible.append("asset_customization_rules")
+        if dynamic_creative_spec:
+            incompatible.append("dynamic_creative_spec")
+        if incompatible:
+            return json.dumps({
+                "error": (
+                    "child_attachments creates a real Meta carousel "
+                    "(object_story_spec.link_data.child_attachments) and cannot be combined with: "
+                    + ", ".join(incompatible)
+                    + ". Use singular message/headline/description on the parent post and "
+                    "name/description on each card. image_hashes with FLEX/Dynamic Creative "
+                    "is not a carousel."
+                )
+            }, indent=2)
+        if not message:
+            return json.dumps({
+                "error": "Carousel ads require 'message' (primary text on the parent post)."
+            }, indent=2)
+        if not link_url:
+            for _card in child_attachments:
+                if isinstance(_card, dict) and _card.get("link"):
+                    link_url = _card["link"]
+                    break
 
     # Validate image_hashes limits
     if image_hashes:
@@ -2357,6 +2564,45 @@ async def create_ad_creative(
                 # object_story_id path has no object_story_spec, so the field
                 # lives at the top level.
                 creative_data["instagram_user_id"] = instagram_actor_id
+
+        elif child_attachments:
+            cards, carousel_err = _normalize_carousel_child_attachments(
+                child_attachments,
+                default_link=link_url,
+                default_cta_type=call_to_action_type,
+                lead_gen_form_id=lead_gen_form_id,
+                phone_number=phone_number,
+            )
+            if carousel_err:
+                return json.dumps({"error": carousel_err}, indent=2)
+
+            parent_link = link_url or cards[0]["link"]
+            link_data: Dict[str, Any] = {
+                "link": parent_link,
+                "child_attachments": cards,
+                "message": message,
+            }
+            if headline:
+                link_data["name"] = headline
+            if description:
+                link_data["description"] = description
+            if caption:
+                link_data["caption"] = caption
+            if multi_share_optimized is not None:
+                link_data["multi_share_optimized"] = bool(multi_share_optimized)
+            if multi_share_end_card is not None:
+                link_data["multi_share_end_card"] = bool(multi_share_end_card)
+            parent_cta = _carousel_call_to_action(
+                call_to_action_type,
+                lead_gen_form_id=lead_gen_form_id,
+                phone_number=phone_number,
+            )
+            if parent_cta:
+                link_data["call_to_action"] = parent_cta
+            creative_data["object_story_spec"] = {
+                "page_id": page_id,
+                "link_data": link_data,
+            }
 
         elif use_asset_feed:
             # Build the media array from the provided source
@@ -2852,6 +3098,8 @@ async def create_ad_creative(
                 "creative_id": creative_id,
                 "details": creative_details,
             }
+            if child_attachments:
+                result["format"] = "CAROUSEL"
 
             posted_afs = creative_data.get("asset_feed_spec") if isinstance(creative_data.get("asset_feed_spec"), dict) else None
             posted_images = posted_afs.get("images") if posted_afs else None
