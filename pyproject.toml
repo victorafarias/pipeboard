@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 authors = [
     {name = "Yves Junqueira", email = "yves.junqueira@gmail.com"},
 ]
-keywords = ["meta", "facebook", "ads", "api", "mcp", "claude"]
+keywords = ["meta", "facebook", "instagram", "ads", "posts", "api", "mcp", "claude"]
 license = {text = "BUSL-1.1"}
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -39,11 +39,12 @@ dependencies = [
 
 [project.scripts]
 meta-ads-mcp = "meta_ads_mcp:entrypoint"
+meta-posts-mcp = "meta_posts_mcp:entrypoint"
 google-ads-mcp = "google_ads_mcp:entrypoint"
 tiktok-ads-mcp = "tiktok_ads_mcp:entrypoint"
 
 [tool.hatch.build.targets.wheel]
-packages = ["meta_ads_mcp", "google_ads_mcp", "tiktok_ads_mcp"]
+packages = ["meta_ads_mcp", "meta_posts_mcp", "google_ads_mcp", "tiktok_ads_mcp"]
 
 [tool.pytest.ini_options]
 markers = [

@@ -17,12 +17,17 @@
     {
       "name": "tiktok-ads-mcp",
       "command": "source .venv/bin/activate && python -m tiktok_ads_mcp --transport streamable-http --host 127.0.0.1 --port 8083"
+    },
+    {
+      "name": "meta-posts-mcp",
+      "command": "source .venv/bin/activate && python -m meta_posts_mcp --transport streamable-http --host 127.0.0.1 --port 8084"
     }
   ],
   "ports": [
     { "name": "meta-ads-mcp", "port": 8080 },
     { "name": "google-ads-mcp", "port": 8081 },
     { "name": "google-analytics-mcp", "port": 8082 },
-    { "name": "tiktok-ads-mcp", "port": 8083 }
+    { "name": "tiktok-ads-mcp", "port": 8083 },
+    { "name": "meta-posts-mcp", "port": 8084 }
   ]
 }
