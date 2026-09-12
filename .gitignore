@@ -16,7 +16,9 @@ wheels/
 poetry.lock
 uv.lock
 .uv.toml
-.cursor/
+.cursor/*
+!.cursor/environment.json
+!.cursor/install.sh
 
 # Generated content
 ad_creatives/
