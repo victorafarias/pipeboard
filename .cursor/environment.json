@@ -1,0 +1,23 @@
+{
+  "name": "Pipeboard MCP servers",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "meta-ads-mcp",
+      "command": "source .venv/bin/activate && python -m meta_ads_mcp --transport streamable-http --host 127.0.0.1 --port 8080"
+    },
+    {
+      "name": "google-ads-mcp",
+      "command": "source .venv/bin/activate && python -m google_ads_mcp --transport streamable-http --host 127.0.0.1 --port 8081"
+    },
+    {
+      "name": "google-analytics-mcp",
+      "command": "source .venv/bin/activate && python -m google_analytics_mcp --transport streamable-http --host 127.0.0.1 --port 8082"
+    },
+    {
+      "name": "tiktok-ads-mcp",
+      "command": "source .venv/bin/activate && python -m tiktok_ads_mcp --transport streamable-http --host 127.0.0.1 --port 8083"
+    }
+  ],
+  "ports": [8080, 8081, 8082, 8083]
+}
