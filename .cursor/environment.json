@@ -19,5 +19,10 @@
       "command": "source .venv/bin/activate && python -m tiktok_ads_mcp --transport streamable-http --host 127.0.0.1 --port 8083"
     }
   ],
-  "ports": [8080, 8081, 8082, 8083]
+  "ports": [
+    { "name": "meta-ads-mcp", "port": 8080 },
+    { "name": "google-ads-mcp", "port": 8081 },
+    { "name": "google-analytics-mcp", "port": 8082 },
+    { "name": "tiktok-ads-mcp", "port": 8083 }
+  ]
 }
