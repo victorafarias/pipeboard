@@ -23,6 +23,7 @@ mcp-name: co.pipeboard/meta-ads-mcp
 - [🚀 Getting started with Remote MCP (Recommended for Marketers)](#getting-started-with-remote-mcp-recommended)
 - [Pipeboard CLI (Alternative to MCP)](#pipeboard-cli-alternative-to-mcp)
 - [Local Installation (Technical Users Only)](#local-installation-technical-users-only)
+- [Meta Posts MCP (Facebook + Instagram organic)](#meta-posts-mcp-facebook--instagram-organic)
 - [Features](#features)
 - [Configuration](#configuration)
 - [Available MCP Tools](#available-mcp-tools)
@@ -171,6 +172,53 @@ If your agent prefers shell commands over JSON-RPC, the [Pipeboard CLI](https://
 🚀 **We strongly recommend using [Remote MCP](https://pipeboard.co) instead** - it's faster, more reliable, and requires no technical setup.
 
 Meta Ads MCP also supports a local streamable HTTP transport, allowing you to run it as a standalone HTTP API for web applications and custom integrations. See **[Streamable HTTP Setup Guide](STREAMABLE_HTTP_SETUP.md)** for complete instructions.
+
+## Meta Posts MCP (Facebook + Instagram organic)
+
+The ads MCP does not publish to the Page or Instagram feed. **Meta Posts MCP** is a separate local server (`python -m meta_posts_mcp`) that uses the same Graph API and `META_ACCESS_TOKEN`, with tools for organic posts, comments, and insights.
+
+Required token permissions: `pages_show_list`, `pages_manage_posts`, `instagram_basic`, `instagram_content_publish` (plus `pages_manage_engagement` / `instagram_manage_comments` to reply). Instagram needs a professional (Business/Creator) account. Media URLs must be publicly fetchable by Meta.
+
+```bash
+python -m meta_posts_mcp --login
+python -m meta_posts_mcp --transport streamable-http --host 127.0.0.1 --port 8084
+```
+
+Cursor (`~/.cursor/mcp.json`), alongside the ads server:
+
+```json
+{
+  "mcpServers": {
+    "meta-ads-remote": {
+      "url": "https://meta-ads.mcp.pipeboard.co/"
+    },
+    "meta-posts": {
+      "command": "python",
+      "args": ["-m", "meta_posts_mcp"],
+      "env": {
+        "META_ACCESS_TOKEN": "YOUR_META_ACCESS_TOKEN"
+      }
+    }
+  }
+}
+```
+
+### Meta Posts tools
+
+| Tool | Purpose |
+|---|---|
+| `facebook_list_pages` | Pages the user can manage (tokens are never returned) |
+| `facebook_create_post` | Text, link, photo, or video post; optional schedule (10 min–75 days) |
+| `facebook_list_posts` / `facebook_get_post` / `facebook_delete_post` | Read and delete Page posts |
+| `facebook_list_comments` / `facebook_reply_to_comment` | Page comment management |
+| `facebook_get_insights` | Page or post insights |
+| `instagram_list_accounts` | Instagram professional accounts linked to those Pages |
+| `instagram_create_photo` / `instagram_create_carousel` / `instagram_create_reel` / `instagram_create_story` | Create containers and optionally publish |
+| `instagram_get_container_status` / `instagram_publish_media` | Finish the two-step Instagram publish flow |
+| `instagram_list_media` / `instagram_get_media` | Read Instagram media |
+| `instagram_list_comments` / `instagram_reply_to_comment` | Instagram comments |
+| `instagram_get_insights` | Account or media insights |
+| `get_login_link` | OAuth URL with publishing scopes |
 
 ## Features
 

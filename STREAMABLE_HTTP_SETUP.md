@@ -16,6 +16,14 @@ python -m meta_ads_mcp --transport streamable-http
 python -m meta_ads_mcp --transport streamable-http --host 0.0.0.0 --port 9000
 ```
 
+Organic Facebook Page / Instagram publishing is a **separate** MCP:
+
+```bash
+python -m meta_posts_mcp --transport streamable-http --host 127.0.0.1 --port 8084
+```
+
+The posts server uses the same `META_ACCESS_TOKEN` / `Authorization: Bearer` auth as Meta Ads MCP. The token must include `pages_manage_posts` and `instagram_content_publish`.
+
 ### 2. Set Authentication
 
 When you run this server yourself, the credential is a **Meta access token** from
