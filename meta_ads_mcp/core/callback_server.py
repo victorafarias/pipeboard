@@ -31,8 +31,11 @@ CALLBACK_SERVER_TIMEOUT = 180  # 3 minutes timeout
 class CallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            # Print path for debugging
-            print(f"Callback server received request: {self.path}")
+            # Print path for debugging, without leaking an access token.
+            safe_path = self.path.split("access_token=", 1)[0]
+            if "access_token=" in self.path:
+                safe_path += "access_token=***"
+            print(f"Callback server received request: {safe_path}")
             
             if self.path.startswith("/callback"):
                 self._handle_oauth_callback()
@@ -107,34 +110,66 @@ class CallbackHandler(BaseHTTPRequestHandler):
             logger.info("OAuth authorization successful")
         else:
             # No code or error - something unexpected happened
+            # Implicit grant (response_type=token) puts the token in the URL
+            # fragment, which the browser does not send to this server.
             html = """
             <html>
-            <head><title>Unexpected Response</title></head>
+            <head><title>Completing authorization</title></head>
             <body>
-                <h1>Unexpected Response</h1>
-                <p>No authorization code or error received. Please try again.</p>
+                <h1>Completing authorization...</h1>
+                <p id="status">Waiting for the Facebook token.</p>
+                <script>
+                    (function () {
+                        var hash = window.location.hash ? window.location.hash.substring(1) : "";
+                        var params = new URLSearchParams(hash);
+                        var token = params.get("access_token");
+                        var expires = params.get("expires_in") || "";
+                        var error = params.get("error");
+                        var status = document.getElementById("status");
+                        if (error) {
+                            status.textContent = "Authorization failed: " + error;
+                            return;
+                        }
+                        if (!token) {
+                            status.textContent = "No authorization code or token received. Please try again.";
+                            return;
+                        }
+                        var url = "/token?access_token=" + encodeURIComponent(token)
+                            + "&expires_in=" + encodeURIComponent(expires);
+                        fetch(url).then(function () {
+                            status.textContent = "Authorization successful. You can close this window.";
+                        }).catch(function () {
+                            status.textContent = "Received the token but could not deliver it to the login process.";
+                        });
+                    })();
+                </script>
             </body>
             </html>
             """
-            logger.warning("OAuth callback received without code or error")
+            logger.warning("OAuth callback received without code or error; waiting for implicit-grant token")
         
         self.wfile.write(html.encode())
     
     def _handle_token(self):
-        """Handle token endpoint for retrieving stored token data"""
-        # This endpoint allows other parts of the application to retrieve
-        # token information from the callback server
-        
+        """Store an implicit-grant token, then acknowledge without echoing it."""
+        params = parse_qs(urlparse(self.path).query)
+        access_token = params.get("access_token", [None])[0]
+        expires_in = params.get("expires_in", [None])[0]
+        if access_token:
+            token_container["token"] = access_token
+            if expires_in and str(expires_in).isdigit():
+                token_container["expires_in"] = int(expires_in)
+            logger.info("Stored implicit-grant access token from callback")
+
         self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
-        
-        # Return current token container contents
+
         response_data = {
             "status": "success",
-            "data": token_container
+            "has_token": bool(token_container.get("token")),
         }
-        
+
         self.wfile.write(json.dumps(response_data).encode())
         
         # The actual token processing is now handled by the auth module
@@ -180,13 +215,20 @@ def shutdown_callback_server():
             callback_server_instance = None
 
 
-def start_callback_server() -> int:
+def start_callback_server(preferred_port: int = 8080, *, strict_port: bool = False, timeout_seconds: int = CALLBACK_SERVER_TIMEOUT) -> int:
     """
     Start the callback server and return the port number it's running on.
-    
+
+    Args:
+        preferred_port: First port to try. Login uses 8888 to match the
+            redirect URI registered with Meta.
+        strict_port: When True, fail if preferred_port is busy instead of
+            scanning upward.
+        timeout_seconds: Auto-shutdown delay.
+
     Returns:
         int: Port number the server is listening on
-        
+
     Raises:
         Exception: If the server fails to start
     """
@@ -202,8 +244,8 @@ def start_callback_server() -> int:
             return callback_server_port
         
         # Find an available port
-        port = 8080
-        max_attempts = 10
+        port = preferred_port
+        max_attempts = 1 if strict_port else 10
         for attempt in range(max_attempts):
             try:
                 # Test if port is available
@@ -230,10 +272,10 @@ def start_callback_server() -> int:
         
         # Set up automatic shutdown timer
         def auto_shutdown():
-            print(f"Callback server auto-shutdown after {CALLBACK_SERVER_TIMEOUT} seconds")
+            print(f"Callback server auto-shutdown after {timeout_seconds} seconds")
             shutdown_callback_server()
         
-        server_shutdown_timer = threading.Timer(CALLBACK_SERVER_TIMEOUT, auto_shutdown)
+        server_shutdown_timer = threading.Timer(timeout_seconds, auto_shutdown)
         server_shutdown_timer.start()
         
         print(f"Callback server started on http://localhost:{port}")

@@ -493,11 +493,13 @@ def login():
     Start the login flow to authenticate with Meta
     """
     print("Starting Meta Ads authentication flow...")
+    max_wait = 300  # 5 minutes
     
     try:
         # Start the callback server first
         try:
-            port = start_callback_server()
+            port = start_callback_server(preferred_port=8888, strict_port=True, timeout_seconds=max_wait)
+            auth_manager.redirect_uri = f"http://localhost:{port}/callback"
         except Exception as callback_error:
             print(f"Error: {callback_error}")
             print("Callback server is disabled. Please use an alternative authentication method:")
@@ -512,13 +514,13 @@ def login():
         
         # Wait for token to be received
         print("Waiting for authentication to complete...")
-        max_wait = 300  # 5 minutes
         wait_interval = 2  # 2 seconds
         
         for _ in range(max_wait // wait_interval):
             if token_container["token"]:
-                token = token_container["token"]
                 print("Authentication successful!")
+                process_token_response(token_container)
+                token = auth_manager.get_access_token() or token_container["token"]
                 # Verify token works by getting basic user info
                 try:
                     from .api import make_api_request

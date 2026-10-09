@@ -4,7 +4,6 @@ import contextvars
 import json
 from typing import Optional
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -66,8 +65,24 @@ def setup_http_auth_patching():
     auth.get_current_access_token = get_current_access_token_with_http_support
 
 
-class AuthInjectionMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+class AuthInjectionMiddleware:
+    """Pure ASGI auth middleware.
+
+    Starlette's BaseHTTPMiddleware reads the body on a side channel and deadlocks
+    streamable HTTP: the app blocks in request.body() while the middleware waits
+    for the response to start. Requests then sit open until the client gives up.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        path = request.url.path
         auth_token = FastMCPAuthIntegration.extract_token_from_headers(dict(request.headers))
         if not auth_token:
             query_token = request.query_params.get("token")
@@ -76,9 +91,9 @@ class AuthInjectionMiddleware(BaseHTTPMiddleware):
         if not auth_token:
             logger.warning(
                 "HTTP Auth Middleware: rejecting request to %s — no Bearer token",
-                request.url.path,
+                path,
             )
-            return Response(
+            response = Response(
                 content=json.dumps(
                     {
                         "error": "Unauthorized",
@@ -92,9 +107,12 @@ class AuthInjectionMiddleware(BaseHTTPMiddleware):
                 media_type="application/json",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+            await response(scope, receive, send)
+            return
+
         FastMCPAuthIntegration.set_auth_token(auth_token)
         try:
-            return await call_next(request)
+            await self.app(scope, receive, send)
         finally:
             FastMCPAuthIntegration.clear_auth_token()
 
