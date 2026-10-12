@@ -69,3 +69,9 @@ python scripts/smoke_mcp.py --url https://meta-posts.ovictorfarias.com.br --toke
 ```
 
 Writes start paused (`PAUSED` on Google, `DISABLE` on TikTok) unless you explicitly override status.
+
+## Request body size (Google Ads image upload)
+
+`upload_image_asset` accepts a PNG or JPG up to 5 MB, usually as base64. A 5 MB file is about 6.7 MB of base64 inside the JSON-RPC body, and a 3.5 MB PNG is about 4.7 MB. The Google Ads HTTP app allows request bodies up to **12 MiB** (12,582,912 bytes). Larger bodies get HTTP 413 before the tool runs.
+
+Traefik does not limit body size unless a buffering middleware is configured. The `google-ads` router sets `google-ads-body` to the same 12 MiB ceiling (`maxRequestBodyBytes` and `memRequestBodyBytes`). Uvicorn's h11 `max_incomplete_event_size` (16 KB) applies to unfinished header blocks, not to the request body.

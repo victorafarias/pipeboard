@@ -59,7 +59,7 @@ def main():
         )
 
     # Register tools
-    from . import accounts, campaigns, ad_groups, ads, keywords, insights, authentication  # noqa: F401
+    from . import accounts, campaigns, ad_groups, ads, image_assets, keywords, insights, authentication  # noqa: F401
 
     if args.transport == "streamable-http":
         logger.info(f"Starting Google Ads MCP with Streamable HTTP on {args.host}:{args.port}")

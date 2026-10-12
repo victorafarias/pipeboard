@@ -67,6 +67,9 @@ services:
       - "traefik.http.routers.google-ads.rule=Host(`google-ads.ovictorfarias.com.br`)"
       - "traefik.http.routers.google-ads.entrypoints=websecure"
       - "traefik.http.routers.google-ads.tls.certresolver=mytlschallenge"
+      - "traefik.http.routers.google-ads.middlewares=google-ads-body"
+      - "traefik.http.middlewares.google-ads-body.buffering.maxRequestBodyBytes=12582912"
+      - "traefik.http.middlewares.google-ads-body.buffering.memRequestBodyBytes=12582912"
       - "traefik.http.services.google-ads.loadbalancer.server.port=8080"
     networks:
       - root_default

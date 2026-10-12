@@ -14,6 +14,12 @@ _auth_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "google_ads_auth_token", default=None
 )
 
+# A 5 MB PNG/JPG becomes about 6.7 MB of base64 inside a JSON-RPC tools/call.
+# 12 MiB covers that payload plus the envelope. Starlette's default is unlimited;
+# this makes the accepted size explicit. Traefik on the google-ads router uses
+# the same ceiling (see docker-compose.yml and VPS.md).
+HTTP_MAX_BODY_BYTES = 12 * 1024 * 1024
+
 
 class FastMCPAuthIntegration:
     @staticmethod
@@ -107,6 +113,9 @@ def setup_starlette_middleware(app):
     )
     if not already_added:
         app.add_middleware(AuthInjectionMiddleware)
+    # Apply before the middleware stack is built (first request). A 3.5 MB PNG
+    # is roughly 4.7 MB of base64 and must not be rejected by the transport.
+    app.max_body_size = HTTP_MAX_BODY_BYTES
 
 
 def setup_fastmcp_http_auth(mcp_server):
