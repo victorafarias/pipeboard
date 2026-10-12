@@ -31,7 +31,7 @@ async def get_ads(
     """List ads for a customer, optionally filtered by campaign or ad group.
 
     Responsive search ads include responsive_search_ad headlines and
-    descriptions. App ads include app_ad headlines and descriptions.
+    descriptions. App ads include app_ad headlines, descriptions, and images.
 
     Args:
         customer_id: Google Ads customer ID
@@ -59,6 +59,7 @@ async def get_ads(
           ad_group_ad.ad.responsive_search_ad.descriptions,
           ad_group_ad.ad.app_ad.headlines,
           ad_group_ad.ad.app_ad.descriptions,
+          ad_group_ad.ad.app_ad.images,
           ad_group.id,
           campaign.id
         FROM ad_group_ad
