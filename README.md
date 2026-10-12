@@ -41,7 +41,7 @@ Pipeboard ships a remote [MCP server](https://modelcontextprotocol.io/) for ever
 | Platform | Remote MCP URL | Surface |
 |---|---|---|
 | **Meta Ads MCP** (Facebook + Instagram) | `https://meta-ads.mcp.pipeboard.co/` | **42 tools** — campaigns, ad sets, ads, creatives (incl. dynamic creative testing), image upload, insights, interest / behavior / demographic / geo targeting, page management |
-| **Google Ads MCP** | `https://google-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, responsive search ads, Performance Max, keywords, GAQL queries, extensions (sitelinks, callouts, structured snippets), audiences, asset uploads, generic mutate |
+| **Google Ads MCP** | `https://google-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, responsive search ads, app ads, Performance Max, keywords, GAQL queries, extensions (sitelinks, callouts, structured snippets), audiences, asset uploads, generic mutate |
 | **TikTok Ads MCP** | `https://tiktok-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, ads, identities, image and video upload, audience and creative management, insights |
 | **Snap Ads MCP** | `https://snap-ads.mcp.pipeboard.co/` | **37 tools** — ad accounts, campaigns, ad squads, ads, creatives, media upload, insights |
 | **Reddit Ads MCP** | `https://reddit-ads.mcp.pipeboard.co/` | **33 tools** — accounts, campaigns, ad groups, ads, performance reports |

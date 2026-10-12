@@ -39,6 +39,7 @@ def test_google_ads_tools_registered():
         "update_ad_group",
         "get_ads",
         "create_responsive_search_ad",
+        "create_app_ad",
         "enable_ad",
         "pause_ad",
         "get_keywords",
