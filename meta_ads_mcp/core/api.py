@@ -167,7 +167,9 @@ async def make_api_request(
     endpoint: str,
     access_token: str,
     params: Optional[Dict[str, Any]] = None,
-    method: str = "GET"
+    method: str = "GET",
+    files: Optional[Dict[str, Any]] = None,
+    timeout: float = 30.0,
 ) -> Dict[str, Any]:
     """
     Make a request to the Meta Graph API.
@@ -237,7 +239,7 @@ async def make_api_request(
                         encoded_params[key] = json.dumps(value)
                     else:
                         encoded_params[key] = value
-                response = await client.get(url, params=encoded_params, headers=headers, timeout=30.0)
+                response = await client.get(url, params=encoded_params, headers=headers, timeout=timeout)
             elif method == "POST":
                 # For Meta API, POST requests need data, not JSON
                 if 'targeting' in request_params and isinstance(request_params['targeting'], dict):
@@ -250,7 +252,15 @@ async def make_api_request(
                         request_params[key] = json.dumps(value)
                 
                 logger.debug(f"POST params (prepared): {masked_params}")
-                response = await client.post(url, data=request_params, headers=headers, timeout=30.0)
+                # files= switches httpx to multipart, which advideos transfer needs
+                # for video_file_chunk. Form fields stay in data=.
+                response = await client.post(
+                    url,
+                    data=request_params,
+                    files=files,
+                    headers=headers,
+                    timeout=timeout,
+                )
             elif method == "PUT":
                 # PUT for updates that Meta requires via PUT (e.g., creative_features_spec).
                 # Meta expects access_token as a query param, not in the body.
@@ -263,9 +273,9 @@ async def make_api_request(
                         body_params[key] = json.dumps(value)
                     else:
                         body_params[key] = value
-                response = await client.put(url, params=query_params, data=body_params, headers=headers, timeout=30.0)
+                response = await client.put(url, params=query_params, data=body_params, headers=headers, timeout=timeout)
             elif method == "DELETE":
-                response = await client.delete(url, params=request_params, headers=headers, timeout=30.0)
+                response = await client.delete(url, params=request_params, headers=headers, timeout=timeout)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
             
@@ -384,7 +394,14 @@ def meta_api_tool(func):
             logger.debug(f"Function call: {func.__name__}")
             logger.debug(f"Args: {args}")
             # Log kwargs without sensitive info
-            safe_kwargs = {k: ('***TOKEN***' if k == 'access_token' else v) for k, v in kwargs.items()}
+            def _safe_kwarg(key: str, value: Any) -> Any:
+                if key == "access_token":
+                    return "***TOKEN***"
+                if key in {"video_base64", "file", "image_base64"} and isinstance(value, str):
+                    return f"<{key} {len(value)} chars>"
+                return value
+
+            safe_kwargs = {k: _safe_kwarg(k, v) for k, v in kwargs.items()}
             logger.debug(f"Kwargs: {safe_kwargs}")
             
             # Log app ID information
@@ -475,10 +492,14 @@ def meta_api_tool(func):
                     result_dict = json.loads(result)
                     if "error" in result_dict:
                         logger.error(f"Error in API response: {result_dict['error']}")
-                        # If this is an app ID error, log more details
-                        if isinstance(result_dict.get("details", {}).get("error", {}), dict):
-                            error_obj = result_dict["details"]["error"]
-                            if error_obj.get("code") == 200 and "Provide valid app ID" in error_obj.get("message", ""):
+                        # If this is an app ID error, log more details.
+                        # details.error is optional; a missing details object must not
+                        # wrap the tool's JSON in {"data": "..."}.
+                        details = result_dict.get("details")
+                        error_obj = {}
+                        if isinstance(details, dict) and isinstance(details.get("error"), dict):
+                            error_obj = details["error"]
+                        if error_obj.get("code") == 200 and "Provide valid app ID" in error_obj.get("message", ""):
                                 logger.error("Meta API authentication configuration issue")
                                 logger.error(f"Current app_id: {app_id}")
                                 # Replace the confusing error with a more user-friendly one

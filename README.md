@@ -457,6 +457,17 @@ For advanced users who need to self-host, the package can be installed from sour
       - `access_token` (optional): Meta API access token
     - Returns: JSON response with image details including hash
 
+16b. `mcp_meta_ads_upload_ad_video`
+    - Upload a video with `POST /act_{id}/advideos`
+    - Inputs:
+      - `account_id`: Meta Ads account ID (`act_123` or `123`)
+      - `video_url`: Public video URL. Meta fetches it as `file_url`
+      - `video_base64`: One base64 chunk, or a whole file up to 8 MiB
+      - `name`: Optional title
+      - `upload_phase`: `start`, `transfer`, or `finish` for a file larger than one request. A 13 MB file does not fit in a 12 MiB JSON body, so send `start` with `file_size`, then `transfer` each slice (`upload_session_id`, `start_offset`, `video_base64`), then `finish`
+      - `timeout_seconds`: How long to poll until `video_status` is `ready` (default 120)
+    - Returns: `video_id` and thumbnail URL(s) once the video is ready
+
 17. `mcp_meta_ads_get_ad_image`
     - Get, download, and visualize a Meta ad image in one step
     - Inputs:
