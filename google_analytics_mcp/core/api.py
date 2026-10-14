@@ -173,8 +173,9 @@ def _parse_json_payload(value: Any) -> Any:
 def json_call_tool_result(value: Any, *, list_result: bool = False) -> CallToolResult:
     """Text in content stays JSON; structuredContent.result is the parsed value.
 
-    FastMCP wraps list/dict annotations as ``{"result": ...}``. Clients that
-    require ``result`` to be an array reject a second ``json.dumps`` pass.
+    FastMCP builds ``{name}Output`` with a required ``result`` field for
+    ``typing.Dict`` and ``typing.List`` annotations. Putting a report dict
+    directly in structuredContent fails validation with "result Field required".
     """
     parsed = _parse_json_payload(value)
     if isinstance(value, str):
@@ -185,12 +186,37 @@ def json_call_tool_result(value: Any, *, list_result: bool = False) -> CallToolR
     if list_result:
         structured = {"result": parsed if isinstance(parsed, list) else []}
         is_error = not isinstance(parsed, list)
-    elif isinstance(parsed, dict):
-        structured = parsed
-        is_error = False
     else:
         structured = {"result": parsed}
         is_error = False
+
+    # #region agent log
+    try:
+        _keys = list(structured)[:20] if isinstance(structured, dict) else []
+        _result = structured.get("result") if isinstance(structured, dict) else None
+        with open(r"c:\Users\Administrator\pipeboard\debug-acd752.log", "a", encoding="utf-8") as _log:
+            _log.write(
+                json.dumps(
+                    {
+                        "sessionId": "acd752",
+                        "hypothesisId": "A",
+                        "location": "google_analytics_mcp/core/api.py:json_call_tool_result",
+                        "message": "structuredContent shape",
+                        "data": {
+                            "list_result": list_result,
+                            "parsed_type": type(parsed).__name__,
+                            "structured_keys": _keys,
+                            "has_result": isinstance(structured, dict) and "result" in structured,
+                            "result_type": type(_result).__name__,
+                        },
+                        "timestamp": int(__import__("time").time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
 
     return CallToolResult(
         content=[TextContent(type="text", text=text)],

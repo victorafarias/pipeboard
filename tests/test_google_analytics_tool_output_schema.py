@@ -50,6 +50,47 @@ def test_json_call_tool_result_parses_json_text():
     assert result.structuredContent["result"] == SAMPLE_ACCOUNTS
 
 
+SAMPLE_REPORT = {
+    "dimension_headers": [{"name": "date"}],
+    "metric_headers": [{"name": "sessions"}],
+    "rows": [
+        {
+            "dimension_values": [{"value": "20261001"}],
+            "metric_values": [{"value": "12"}],
+        }
+    ],
+    "row_count": 1,
+}
+
+
+def test_json_call_tool_result_dict_is_wrapped_in_result():
+    from google_analytics_mcp.core.api import json_call_tool_result
+
+    result = json_call_tool_result(SAMPLE_REPORT, list_result=False)
+
+    assert list(result.structuredContent) == ["result"]
+    assert result.structuredContent["result"]["row_count"] == 1
+    assert json.loads(result.content[0].text) == SAMPLE_REPORT
+
+
+def test_run_report_schema_accepts_wrapped_report():
+    from google_analytics_mcp.core import reports  # noqa: F401
+    from google_analytics_mcp.core.api import json_call_tool_result
+
+    tool = _get_tool("run_report")
+    schema = tool.output_schema
+    assert schema is not None
+    assert schema["required"] == ["result"]
+    assert schema["properties"]["result"]["type"] == "object"
+
+    converted = tool.fn_metadata.convert_result(
+        json_call_tool_result(SAMPLE_REPORT, list_result=False)
+    )
+    assert isinstance(converted, CallToolResult)
+    assert converted.structuredContent["result"]["row_count"] == 1
+    assert json.loads(converted.content[0].text)["metric_headers"][0]["name"] == "sessions"
+
+
 def test_get_account_summaries_schema_result_is_array():
     from google_analytics_mcp.core import accounts  # noqa: F401
 
