@@ -1499,6 +1499,488 @@ async def upload_ad_image(
         }, indent=2)
 
 
+# 8 MiB of video bytes is about 10.7 MiB of base64, which still fits under a
+# 12 MiB JSON-RPC body. A 13 MB file therefore has to be sent across calls.
+VIDEO_CHUNK_MAX_BYTES = 8 * 1024 * 1024
+DEFAULT_VIDEO_READY_TIMEOUT_SECONDS = 120
+MAX_VIDEO_READY_TIMEOUT_SECONDS = 600
+_VIDEO_READY_POLL_SECONDS = 2.0
+
+
+def _decode_video_base64(value: str) -> bytes:
+    import base64
+
+    text = (value or "").strip()
+    if text.lower().startswith("data:"):
+        marker = "base64,"
+        if marker not in text.lower():
+            raise ValueError("video_base64 data URL must be base64")
+        text = text.split(marker, 1)[1]
+    text = "".join(text.split())
+    if not text:
+        raise ValueError("video_base64 is empty")
+    try:
+        return base64.b64decode(text, validate=True)
+    except Exception as exc:
+        raise ValueError("video_base64 is not valid base64") from exc
+
+
+def _video_status_name(payload: Dict[str, Any]) -> str:
+    status = payload.get("status")
+    if isinstance(status, str):
+        return status.strip().lower()
+    if isinstance(status, dict):
+        for key in ("video_status", "status"):
+            value = status.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    return ""
+
+
+def _thumbnail_urls(payload: Dict[str, Any]) -> List[str]:
+    preferred: List[str] = []
+    others: List[str] = []
+    thumbnails = payload.get("thumbnails")
+    data = thumbnails.get("data") if isinstance(thumbnails, dict) else thumbnails
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            uri = item.get("uri") or item.get("url")
+            if not isinstance(uri, str) or not uri:
+                continue
+            if item.get("is_preferred"):
+                preferred.append(uri)
+            else:
+                others.append(uri)
+    picture = payload.get("picture")
+    ordered = preferred + ([picture] if isinstance(picture, str) and picture else []) + others
+    unique: List[str] = []
+    for url in ordered:
+        if url not in unique:
+            unique.append(url)
+    return unique
+
+
+def _video_result(
+    *,
+    account_id: str,
+    video_id: str,
+    payload: Dict[str, Any],
+    name: Optional[str],
+    timed_out: bool,
+    timeout_seconds: int,
+) -> Dict[str, Any]:
+    status = _video_status_name(payload) or "unknown"
+    result: Dict[str, Any] = {
+        "success": status == "ready" and not timed_out,
+        "account_id": account_id,
+        "video_id": video_id,
+        "status": status,
+        "thumbnails": _thumbnail_urls(payload),
+    }
+    if name:
+        result["name"] = name
+    if status == "error":
+        result["success"] = False
+        result["error"] = "Meta reported video_status=error"
+        result["details"] = payload.get("status")
+    elif timed_out or status != "ready":
+        result["success"] = False
+        result["error"] = (
+            f"Video was not ready within {timeout_seconds} seconds. "
+            "Call get_ad_video with this video_id to check again."
+        )
+        result["timeout_seconds"] = timeout_seconds
+    return result
+
+
+async def _poll_video_until_ready(
+    video_id: str,
+    access_token: str,
+    timeout_seconds: int,
+) -> tuple:
+    deadline = time.monotonic() + timeout_seconds
+    last: Dict[str, Any] = {}
+    while True:
+        last = await make_api_request(
+            video_id,
+            access_token,
+            {"fields": "id,status,picture,thumbnails{uri,is_preferred}"},
+        )
+        if isinstance(last, dict) and "error" in last and "status" not in last:
+            return last, False
+        status = _video_status_name(last if isinstance(last, dict) else {})
+        if status in {"ready", "error"}:
+            return last, False
+        if time.monotonic() >= deadline:
+            return last if isinstance(last, dict) else {}, True
+        remaining = deadline - time.monotonic()
+        await asyncio.sleep(min(_VIDEO_READY_POLL_SECONDS, max(0.0, remaining)))
+
+
+async def _post_advideo(
+    account_id: str,
+    access_token: str,
+    params: Dict[str, Any],
+    files: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return await make_api_request(
+        f"{ensure_act_prefix(account_id)}/advideos",
+        access_token,
+        params,
+        method="POST",
+        files=files,
+        timeout=120.0,
+    )
+
+
+def _api_error(data: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(data, dict) and "error" in data and "upload_session_id" not in data and "id" not in data and "video_id" not in data:
+        return data
+    return None
+
+
+async def _upload_video_bytes_resumable(
+    account_id: str,
+    access_token: str,
+    data: bytes,
+    name: Optional[str],
+) -> Dict[str, Any]:
+    """Push a complete file through start/transfer/finish in Meta-sized chunks."""
+    started = await _post_advideo(
+        account_id,
+        access_token,
+        {"upload_phase": "start", "file_size": len(data)},
+    )
+    if _api_error(started):
+        return started
+    session_id = str(started.get("upload_session_id") or "")
+    video_id = str(started.get("video_id") or started.get("id") or "")
+    if not session_id:
+        return {"error": "Meta did not return an upload_session_id", "details": started}
+    start_offset = int(started.get("start_offset") or 0)
+    end_offset = int(started.get("end_offset") or len(data))
+    steps = 0
+    while start_offset != end_offset and start_offset < len(data):
+        steps += 1
+        if steps > 10000:
+            return {"error": "Video upload did not advance", "video_id": video_id}
+        chunk_end = end_offset if end_offset > start_offset else min(len(data), start_offset + VIDEO_CHUNK_MAX_BYTES)
+        chunk_end = min(chunk_end, len(data))
+        chunk = data[start_offset:chunk_end]
+        if not chunk:
+            break
+        transferred = await _post_advideo(
+            account_id,
+            access_token,
+            {
+                "upload_phase": "transfer",
+                "upload_session_id": session_id,
+                "start_offset": start_offset,
+            },
+            files={"video_file_chunk": ("chunk.mp4", chunk, "application/octet-stream")},
+        )
+        if _api_error(transferred):
+            return transferred
+        new_start = int(transferred.get("start_offset") or start_offset)
+        new_end = int(transferred.get("end_offset") or end_offset)
+        if new_start == start_offset and new_end == end_offset:
+            return {"error": "Video upload offset did not advance", "details": transferred, "video_id": video_id}
+        start_offset, end_offset = new_start, new_end
+        if start_offset == end_offset:
+            break
+    finish_params: Dict[str, Any] = {
+        "upload_phase": "finish",
+        "upload_session_id": session_id,
+    }
+    if name:
+        finish_params["title"] = name
+        finish_params["name"] = name
+    finished = await _post_advideo(account_id, access_token, finish_params)
+    if _api_error(finished):
+        return finished
+    return {
+        "video_id": str(finished.get("video_id") or finished.get("id") or video_id),
+        "upload_session_id": session_id,
+    }
+
+
+@mcp_server.tool()
+@meta_api_tool
+async def upload_ad_video(
+    account_id: str,
+    video_url: Optional[str] = None,
+    video_base64: Optional[str] = None,
+    name: Optional[str] = None,
+    upload_phase: Optional[str] = None,
+    file_size: Optional[int] = None,
+    upload_session_id: Optional[str] = None,
+    start_offset: Optional[int] = None,
+    video_id: Optional[str] = None,
+    timeout_seconds: int = DEFAULT_VIDEO_READY_TIMEOUT_SECONDS,
+    access_token: Optional[str] = None,
+) -> str:
+    """Upload a video to a Meta ad account (POST /act_{id}/advideos).
+
+    A public video_url is sent as file_url and Meta fetches it. video_base64
+    uses the resumable upload (upload_phase start, transfer, finish). One call
+    can carry at most 8 MiB of video bytes so the base64 body stays under the
+    12 MiB request limit. A larger file, including 13 MB, is sent across calls:
+
+    1. upload_phase=start and file_size set to the full byte length.
+    2. upload_phase=transfer with upload_session_id, start_offset, and the next
+       video_base64 chunk (use the offsets returned by the previous call).
+    3. upload_phase=finish with upload_session_id and the video_id from start.
+
+    Finish, a public URL, and a single base64 chunk all poll until
+    status.video_status is ready, or until timeout_seconds (default 120).
+
+    Args:
+        account_id: Meta ad account ID (act_123 or 123)
+        video_url: Public http(s) URL. Meta downloads it via file_url.
+        video_base64: Raw base64 or a data URL of one chunk, or of a file up to 8 MiB
+        name: Optional video title
+        upload_phase: Omit for URL or a single small file. Otherwise start, transfer, or finish
+        file_size: Full file size in bytes. Required for upload_phase=start
+        upload_session_id: Session id returned by start. Required for transfer and finish
+        start_offset: Byte offset returned by the previous phase. Required for transfer
+        video_id: Video id returned by start. Used when finish does not repeat it
+        timeout_seconds: How long to poll for video_status=ready (1-600, default 120)
+        access_token: Meta API access token (optional)
+    """
+    if not account_id:
+        return json.dumps({"error": "No account ID provided"}, indent=2)
+    account_id = ensure_act_prefix(account_id)
+    phase = (upload_phase or "").strip().lower()
+    if phase and phase not in {"start", "transfer", "finish"}:
+        return json.dumps({"error": "upload_phase must be start, transfer, or finish"}, indent=2)
+    if timeout_seconds < 1 or timeout_seconds > MAX_VIDEO_READY_TIMEOUT_SECONDS:
+        return json.dumps({
+            "error": f"timeout_seconds must be between 1 and {MAX_VIDEO_READY_TIMEOUT_SECONDS}"
+        }, indent=2)
+    has_url = isinstance(video_url, str) and bool(video_url.strip())
+    has_bytes = isinstance(video_base64, str) and bool(video_base64.strip())
+    if has_url and (has_bytes or phase):
+        return json.dumps({"error": "Use either video_url or the resumable base64 upload, not both"}, indent=2)
+    if not has_url and not has_bytes and phase not in {"start", "finish"}:
+        return json.dumps({
+            "error": "Provide video_url or video_base64, or upload_phase start/finish for a chunked upload"
+        }, indent=2)
+
+    title = (name or "").strip()
+    try:
+        if has_url:
+            from .utils import BlockedURLError, validate_public_url
+
+            try:
+                validate_public_url(video_url.strip())
+            except BlockedURLError as exc:
+                return json.dumps({"error": str(exc), "video_url": video_url}, indent=2)
+            if not title:
+                path = video_url.split("?", 1)[0].rstrip("/").split("/")[-1]
+                title = path or "upload.mp4"
+            params: Dict[str, Any] = {"file_url": video_url.strip(), "name": title, "title": title}
+            uploaded = await _post_advideo(account_id, access_token, params)
+            if _api_error(uploaded):
+                return json.dumps({
+                    "error": "Failed to upload video",
+                    "details": uploaded.get("error"),
+                    "account_id": account_id,
+                }, indent=2)
+            ready_id = str(uploaded.get("id") or uploaded.get("video_id") or "")
+            if not ready_id:
+                return json.dumps({"error": "Meta did not return a video id", "details": uploaded}, indent=2)
+            polled, timed_out = await _poll_video_until_ready(ready_id, access_token, timeout_seconds)
+            if isinstance(polled, dict) and "error" in polled and "status" not in polled:
+                return json.dumps({
+                    "error": "Video uploaded but status could not be read",
+                    "video_id": ready_id,
+                    "details": polled.get("error"),
+                    "account_id": account_id,
+                }, indent=2)
+            return json.dumps(
+                _video_result(
+                    account_id=account_id,
+                    video_id=ready_id,
+                    payload=polled if isinstance(polled, dict) else {},
+                    name=title,
+                    timed_out=timed_out,
+                    timeout_seconds=timeout_seconds,
+                ),
+                indent=2,
+            )
+
+        if phase == "start":
+            if file_size is None or int(file_size) <= 0:
+                return json.dumps({"error": "file_size must be the full video size in bytes"}, indent=2)
+            started = await _post_advideo(
+                account_id,
+                access_token,
+                {"upload_phase": "start", "file_size": int(file_size)},
+            )
+            if _api_error(started):
+                return json.dumps({
+                    "error": "Failed to start video upload",
+                    "details": started.get("error"),
+                    "account_id": account_id,
+                }, indent=2)
+            return json.dumps({
+                "success": True,
+                "account_id": account_id,
+                "upload_phase": "start",
+                "upload_session_id": started.get("upload_session_id"),
+                "video_id": started.get("video_id") or started.get("id"),
+                "start_offset": int(started.get("start_offset") or 0),
+                "end_offset": int(started.get("end_offset") or 0),
+                "max_chunk_bytes": VIDEO_CHUNK_MAX_BYTES,
+                "message": (
+                    "Send the next slice as video_base64 with upload_phase=transfer. "
+                    f"Each chunk must be at most {VIDEO_CHUNK_MAX_BYTES} bytes so the "
+                    "base64 request stays under 12 MiB. A 13 MB file needs more than one transfer."
+                ),
+            }, indent=2)
+
+        if phase == "transfer":
+            if not upload_session_id or start_offset is None or not has_bytes:
+                return json.dumps({
+                    "error": "transfer requires upload_session_id, start_offset, and video_base64"
+                }, indent=2)
+            try:
+                chunk = _decode_video_base64(video_base64)
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)}, indent=2)
+            if len(chunk) > VIDEO_CHUNK_MAX_BYTES:
+                return json.dumps({
+                    "error": (
+                        f"Chunk is {len(chunk)} bytes. The maximum per call is "
+                        f"{VIDEO_CHUNK_MAX_BYTES} bytes so base64 stays under the 12 MiB request limit."
+                    ),
+                    "max_chunk_bytes": VIDEO_CHUNK_MAX_BYTES,
+                }, indent=2)
+            transferred = await _post_advideo(
+                account_id,
+                access_token,
+                {
+                    "upload_phase": "transfer",
+                    "upload_session_id": upload_session_id,
+                    "start_offset": int(start_offset),
+                },
+                files={"video_file_chunk": ("chunk.mp4", chunk, "application/octet-stream")},
+            )
+            if _api_error(transferred):
+                return json.dumps({
+                    "error": "Failed to transfer video chunk",
+                    "details": transferred.get("error"),
+                    "account_id": account_id,
+                }, indent=2)
+            new_start = int(transferred.get("start_offset") or 0)
+            new_end = int(transferred.get("end_offset") or 0)
+            return json.dumps({
+                "success": True,
+                "account_id": account_id,
+                "upload_phase": "transfer",
+                "upload_session_id": upload_session_id,
+                "video_id": video_id or transferred.get("video_id"),
+                "start_offset": new_start,
+                "end_offset": new_end,
+                "upload_complete": new_start == new_end,
+                "message": (
+                    "Call upload_phase=finish."
+                    if new_start == new_end
+                    else "Send the next slice with the returned start_offset."
+                ),
+            }, indent=2)
+
+        if phase == "finish":
+            if not upload_session_id:
+                return json.dumps({"error": "finish requires upload_session_id"}, indent=2)
+            finish_params: Dict[str, Any] = {
+                "upload_phase": "finish",
+                "upload_session_id": upload_session_id,
+            }
+            if title:
+                finish_params["title"] = title
+                finish_params["name"] = title
+            finished = await _post_advideo(account_id, access_token, finish_params)
+            if _api_error(finished):
+                return json.dumps({
+                    "error": "Failed to finish video upload",
+                    "details": finished.get("error"),
+                    "account_id": account_id,
+                }, indent=2)
+            ready_id = str(finished.get("video_id") or finished.get("id") or video_id or "")
+            if not ready_id:
+                return json.dumps({
+                    "error": "Upload finished but no video_id was available. Pass the video_id from start.",
+                    "details": finished,
+                }, indent=2)
+            polled, timed_out = await _poll_video_until_ready(ready_id, access_token, timeout_seconds)
+            if isinstance(polled, dict) and "error" in polled and "status" not in polled:
+                return json.dumps({
+                    "success": False,
+                    "video_id": ready_id,
+                    "error": "Video uploaded but status could not be read",
+                    "details": polled.get("error"),
+                    "account_id": account_id,
+                }, indent=2)
+            return json.dumps(
+                _video_result(
+                    account_id=account_id,
+                    video_id=ready_id,
+                    payload=polled if isinstance(polled, dict) else {},
+                    name=title or None,
+                    timed_out=timed_out,
+                    timeout_seconds=timeout_seconds,
+                ),
+                indent=2,
+            )
+
+        try:
+            data = _decode_video_base64(video_base64)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)}, indent=2)
+        if len(data) > VIDEO_CHUNK_MAX_BYTES:
+            return json.dumps({
+                "error": (
+                    f"Video is {len(data)} bytes. Send at most {VIDEO_CHUNK_MAX_BYTES} bytes "
+                    "per call so base64 stays under the 12 MiB request limit. For a 13 MB file, "
+                    "call upload_phase=start with file_size, then transfer each slice, then finish."
+                ),
+                "max_chunk_bytes": VIDEO_CHUNK_MAX_BYTES,
+                "file_size": len(data),
+            }, indent=2)
+        uploaded = await _upload_video_bytes_resumable(account_id, access_token, data, title or None)
+        if _api_error(uploaded) or not uploaded.get("video_id"):
+            return json.dumps({
+                "error": "Failed to upload video",
+                "details": uploaded.get("error") if isinstance(uploaded, dict) else uploaded,
+                "account_id": account_id,
+            }, indent=2)
+        polled, timed_out = await _poll_video_until_ready(uploaded["video_id"], access_token, timeout_seconds)
+        if isinstance(polled, dict) and "error" in polled and "status" not in polled:
+            return json.dumps({
+                "success": False,
+                "video_id": uploaded["video_id"],
+                "error": "Video uploaded but status could not be read",
+                "details": polled.get("error"),
+                "account_id": account_id,
+            }, indent=2)
+        return json.dumps(
+            _video_result(
+                account_id=account_id,
+                video_id=str(uploaded["video_id"]),
+                payload=polled if isinstance(polled, dict) else {},
+                name=title or None,
+                timed_out=timed_out,
+                timeout_seconds=timeout_seconds,
+            ),
+            indent=2,
+        )
+    except Exception as exc:
+        return json.dumps({"error": "Failed to upload video", "details": str(exc)}, indent=2)
+
+
 # Valid image_crops keys accepted by Meta's API and their aspect ratios (width/height).
 _VALID_CROP_KEYS: list[tuple[str, int, int]] = [
     ("100x100", 100, 100),   # 1:1 square — Feed, Marketplace, Search
