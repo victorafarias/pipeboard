@@ -1,4 +1,4 @@
-"""Image asset upload and App ad image updates."""
+"""Image and YouTube asset tools for App ads."""
 
 import base64
 import ipaddress
@@ -12,6 +12,11 @@ import httpx
 from google.protobuf.field_mask_pb2 import FieldMask
 from PIL import Image, UnidentifiedImageError
 
+from .ads import (
+    _classify_youtube_video,
+    _create_youtube_video_asset,
+    _existing_youtube_asset_resource_name,
+)
 from .api import google_api_tool, get_client, run_gaql, McpToolError
 from .server import mcp_server
 from .utils import normalize_customer_id
@@ -80,6 +85,7 @@ async def _ssrf_guard_request_hook(request: httpx.Request) -> None:
 
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_APP_AD_IMAGES = 20
+MAX_APP_AD_VIDEOS = 20
 _ASSET_NAME_MAX = 255
 _ASSET_RESOURCE_RE = re.compile(r"^customers/\d+/assets/\d+$")
 _DATA_URL_RE = re.compile(r"^data:image/(?:png|jpe?g);base64,", re.IGNORECASE)
@@ -264,11 +270,11 @@ def _ad_from_row(row) -> dict:
     return row
 
 
-def _existing_image_assets(ad: dict) -> List[str]:
+def _existing_linked_assets(ad: dict, field: str) -> List[str]:
     app_ad = ad.get("app_ad") if isinstance(ad.get("app_ad"), dict) else {}
-    images = app_ad.get("images") or []
+    items = app_ad.get(field) or []
     names = []
-    for item in images:
+    for item in items:
         if isinstance(item, dict) and item.get("asset"):
             names.append(str(item["asset"]))
         elif isinstance(item, str) and item:
@@ -276,12 +282,22 @@ def _existing_image_assets(ad: dict) -> List[str]:
     return names
 
 
-def _load_app_ad(customer_id: str, ad_id: str, access_token: Optional[str]) -> dict:
+def _existing_image_assets(ad: dict) -> List[str]:
+    return _existing_linked_assets(ad, "images")
+
+
+def _load_app_ad(
+    customer_id: str,
+    ad_id: str,
+    access_token: Optional[str],
+    select_field: str = "app_ad.images",
+    tool_hint: str = "update_app_ad_images only changes app_ad.images.",
+) -> dict:
     query = f"""
         SELECT
           ad.id,
           ad.type,
-          ad.app_ad.images
+          ad.{select_field}
         FROM ad
         WHERE ad.id = {ad_id}
         LIMIT 1
@@ -293,10 +309,56 @@ def _load_app_ad(customer_id: str, ad_id: str, access_token: Optional[str]) -> d
     ad_type = _enum_name(ad.get("type_") or ad.get("type"))
     if ad_type != "APP_AD":
         raise McpToolError(
-            f"Ad {ad_id} is not an App ad (type is {ad_type or 'unknown'}). "
-            "update_app_ad_images only changes app_ad.images."
+            f"Ad {ad_id} is not an App ad (type is {ad_type or 'unknown'}). {tool_hint}"
         )
     return ad
+
+
+def _resolve_youtube_inputs(
+    customer_id: str,
+    videos,
+    access_token: Optional[str],
+) -> List[tuple]:
+    """Classify inputs. Video ids are looked up but not created yet.
+
+    Each item is ("asset", resource_name) or ("pending", youtube_video_id).
+    """
+    if not isinstance(videos, (list, tuple)):
+        raise McpToolError(
+            "youtube_videos must be a list of video ids, YouTube URLs, or asset resource names"
+        )
+    resolved: List[tuple] = []
+    seen_ids = {}
+    for index, value in enumerate(videos, start=1):
+        kind, token = _classify_youtube_video(value, index)
+        if kind == "asset":
+            resolved.append(("asset", token))
+            continue
+        if token in seen_ids:
+            resolved.append(seen_ids[token])
+            continue
+        existing = _existing_youtube_asset_resource_name(customer_id, token, access_token)
+        item = ("asset", existing) if existing else ("pending", token)
+        seen_ids[token] = item
+        resolved.append(item)
+    return resolved
+
+
+def _compose_video_list(existing: Sequence[str], resolved: Sequence[tuple], mode: str) -> tuple:
+    """Return (ordered items, pending ids) before any asset is created."""
+    sequence = [("asset", name) for name in existing] + list(resolved) if mode == "append" else list(resolved)
+    final_known = []
+    pending_ids = []
+    seen = set()
+    for kind, value in sequence:
+        if kind == "asset":
+            if value not in seen:
+                seen.add(value)
+                final_known.append(("asset", value))
+        elif value not in pending_ids:
+            pending_ids.append(value)
+            final_known.append(("pending", value))
+    return final_known, pending_ids
 
 
 @mcp_server.tool()
@@ -430,5 +492,91 @@ async def update_app_ad_images(
         "image_count": len(final_images),
         "message": (
             f"App ad images {verb}. Status, headlines, and descriptions were not changed."
+        ),
+    }
+
+
+@mcp_server.tool()
+@google_api_tool
+async def update_app_ad_videos(
+    customer_id: str,
+    ad_id: str,
+    youtube_videos: List[str],
+    mode: str = "replace",
+    access_token: Optional[str] = None,
+) -> dict:
+    """Replace or append YouTube videos on an existing App ad.
+
+    Uses AdService.MutateAds with update_mask app_ad.youtube_videos only, so
+    images, headlines, descriptions, and status stay as they are. Each entry
+    may be an 11-character video id, a youtube.com / youtu.be / shorts URL, or
+    an existing asset resource name. Ids are reused when a YOUTUBE_VIDEO asset
+    already exists and otherwise created. append dedupes. An App ad can have
+    at most 20 videos. mode is replace (default) or append.
+
+    Args:
+        customer_id: Google Ads customer ID
+        ad_id: Ad ID of an existing App ad
+        youtube_videos: Video ids, YouTube URLs, or asset resource names
+        mode: replace or append
+    """
+    mode_value = (mode or "replace").strip().lower()
+    if mode_value not in {"replace", "append"}:
+        raise McpToolError("mode must be replace or append")
+    cid = _require_customer_id(customer_id)
+    ad_id_value = _require_numeric_id(ad_id, "ad_id")
+    resolved = _resolve_youtube_inputs(cid, youtube_videos, access_token)
+    ad = _load_app_ad(
+        cid,
+        ad_id_value,
+        access_token,
+        select_field="app_ad.youtube_videos",
+        tool_hint="update_app_ad_videos only changes app_ad.youtube_videos.",
+    )
+    existing = _dedupe(_existing_linked_assets(ad, "youtube_videos"))
+    planned, pending_ids = _compose_video_list(existing, resolved, mode_value)
+    if len(planned) > MAX_APP_AD_VIDEOS:
+        raise McpToolError(
+            f"App ads allow at most {MAX_APP_AD_VIDEOS} videos (got {len(planned)}). "
+            f"The ad currently has {len(existing)}."
+        )
+
+    client = get_client(access_token)
+    created_names = {
+        video_id: _create_youtube_video_asset(client, cid, video_id)
+        for video_id in pending_ids
+    }
+    final_videos = []
+    for kind, value in planned:
+        resource_name = value if kind == "asset" else created_names[value]
+        if resource_name not in final_videos:
+            final_videos.append(resource_name)
+
+    ad_service = client.get_service("AdService")
+    operation = client.get_type("AdOperation")
+    updated = operation.update
+    updated.resource_name = ad_service.ad_path(cid, ad_id_value)
+    for resource_name in final_videos:
+        video_asset = client.get_type("AdVideoAsset")
+        video_asset.asset = resource_name
+        updated.app_ad.youtube_videos.append(video_asset)
+    operation.update_mask.CopyFrom(FieldMask(paths=["app_ad.youtube_videos"]))
+    response = ad_service.mutate_ads(customer_id=cid, operations=[operation])
+    results = getattr(response, "results", None) or []
+    resource_name = ""
+    if results:
+        resource_name = getattr(results[0], "resource_name", "") or ""
+    if not resource_name:
+        resource_name = ad_service.ad_path(cid, ad_id_value)
+    verb = "replaced" if mode_value == "replace" else "appended"
+    return {
+        "customer_id": cid,
+        "ad_id": ad_id_value,
+        "ad_resource_name": resource_name,
+        "mode": mode_value,
+        "youtube_video_assets": final_videos,
+        "video_count": len(final_videos),
+        "message": (
+            f"App ad videos {verb}. Images, headlines, descriptions, and status were not changed."
         ),
     }

@@ -31,7 +31,8 @@ async def get_ads(
     """List ads for a customer, optionally filtered by campaign or ad group.
 
     Responsive search ads include responsive_search_ad headlines and
-    descriptions. App ads include app_ad headlines, descriptions, and images.
+    descriptions. App ads include app_ad headlines, descriptions, images,
+    and youtube_videos.
 
     Args:
         customer_id: Google Ads customer ID
@@ -60,6 +61,7 @@ async def get_ads(
           ad_group_ad.ad.app_ad.headlines,
           ad_group_ad.ad.app_ad.descriptions,
           ad_group_ad.ad.app_ad.images,
+          ad_group_ad.ad.app_ad.youtube_videos,
           ad_group.id,
           campaign.id
         FROM ad_group_ad
@@ -227,13 +229,15 @@ def _existing_youtube_asset_resource_name(
     return ""
 
 
-def _create_youtube_video_asset(client, customer_id: str, video_id: str) -> str:
+def _create_youtube_video_asset(
+    client, customer_id: str, video_id: str, name: Optional[str] = None
+) -> str:
     asset_service = client.get_service("AssetService")
     operation = client.get_type("AssetOperation")
     asset = operation.create
     asset.type_ = client.enums.AssetTypeEnum.YOUTUBE_VIDEO
     asset.youtube_video_asset.youtube_video_id = video_id
-    asset.name = f"YouTube video {video_id}"
+    asset.name = (name or "").strip() or f"YouTube video {video_id}"
     request = client.get_type("MutateAssetsRequest")
     request.customer_id = customer_id
     request.operations.append(operation)
@@ -290,6 +294,66 @@ def _resolve_youtube_videos(
             }
         )
     return resolved
+
+
+def _require_customer_id(customer_id: str) -> str:
+    if not customer_id or not str(customer_id).strip():
+        raise McpToolError("customer_id is required")
+    cid = normalize_customer_id(customer_id)
+    if not cid:
+        raise McpToolError("customer_id is required")
+    return cid
+
+
+@mcp_server.tool()
+@google_api_tool
+async def create_youtube_video_asset(
+    customer_id: str,
+    video: str,
+    name: Optional[str] = None,
+    access_token: Optional[str] = None,
+) -> dict:
+    """Create or reuse a YOUTUBE_VIDEO asset and return its resource name.
+
+    video is an 11-character YouTube id or a youtube.com / youtu.be / shorts
+    URL. If this customer already has a YOUTUBE_VIDEO asset for that id, that
+    asset is returned and name is ignored. Otherwise a new asset is created.
+    name is optional and defaults to "YouTube video {id}".
+
+    Args:
+        customer_id: Google Ads customer ID
+        video: YouTube video id or URL
+        name: Optional asset name when a new asset is created
+    """
+    kind, video_id = _classify_youtube_video(video, 1)
+    if kind != "id":
+        raise McpToolError(
+            "video must be an 11-character YouTube id or a youtube.com, "
+            "youtu.be, or shorts URL. Pass an asset resource name to "
+            "update_app_ad_videos instead."
+        )
+    asset_name = (name or "").strip() if isinstance(name, str) else ""
+    if asset_name and len(asset_name) > 255:
+        raise McpToolError("name must be 255 characters or fewer")
+    cid = _require_customer_id(customer_id)
+    existing = _existing_youtube_asset_resource_name(cid, video_id, access_token)
+    created = False
+    if existing:
+        resource_name = existing
+    else:
+        client = get_client(access_token)
+        resource_name = _create_youtube_video_asset(
+            client, cid, video_id, asset_name or None
+        )
+        created = True
+    return {
+        "customer_id": cid,
+        "asset_resource_name": resource_name,
+        "asset_id": resource_name.rsplit("/", 1)[-1],
+        "youtube_video_id": video_id,
+        "created": created,
+        "name": asset_name or f"YouTube video {video_id}" if created else None,
+    }
 
 
 def _ad_id_from_resource_name(resource_name: str) -> Optional[str]:
