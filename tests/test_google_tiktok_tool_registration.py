@@ -43,6 +43,8 @@ def test_google_ads_tools_registered():
         "create_app_ad",
         "upload_image_asset",
         "update_app_ad_images",
+        "create_youtube_video_asset",
+        "update_app_ad_videos",
         "enable_ad",
         "pause_ad",
         "get_keywords",

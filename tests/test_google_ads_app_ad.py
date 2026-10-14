@@ -279,6 +279,7 @@ async def test_get_ads_selects_app_ad_headlines_and_descriptions():
     assert "ad_group_ad.ad.app_ad.headlines" in query
     assert "ad_group_ad.ad.app_ad.descriptions" in query
     assert "ad_group_ad.ad.app_ad.images" in query
+    assert "ad_group_ad.ad.app_ad.youtube_videos" in query
     assert "ad_group.id = 99" in query
     payload = json.loads(raw)
     assert payload["customer_id"] == "1234567890"

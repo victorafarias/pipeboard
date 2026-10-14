@@ -23,6 +23,7 @@ mcp-name: co.pipeboard/meta-ads-mcp
 - [🚀 Getting started with Remote MCP (Recommended for Marketers)](#getting-started-with-remote-mcp-recommended)
 - [Pipeboard CLI (Alternative to MCP)](#pipeboard-cli-alternative-to-mcp)
 - [Local Installation (Technical Users Only)](#local-installation-technical-users-only)
+- [Google Ads app ads](#google-ads-app-ads)
 - [Meta Posts MCP (Facebook + Instagram organic)](#meta-posts-mcp-facebook--instagram-organic)
 - [Features](#features)
 - [Configuration](#configuration)
@@ -41,7 +42,7 @@ Pipeboard ships a remote [MCP server](https://modelcontextprotocol.io/) for ever
 | Platform | Remote MCP URL | Surface |
 |---|---|---|
 | **Meta Ads MCP** (Facebook + Instagram) | `https://meta-ads.mcp.pipeboard.co/` | **42 tools** — campaigns, ad sets, ads, creatives (incl. dynamic creative testing), image upload, insights, interest / behavior / demographic / geo targeting, page management |
-| **Google Ads MCP** | `https://google-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, responsive search ads, app ads, Performance Max, keywords, GAQL queries, extensions (sitelinks, callouts, structured snippets), audiences, asset uploads, generic mutate |
+| **Google Ads MCP** | `https://google-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, responsive search ads, app ads, YouTube video assets, Performance Max, keywords, GAQL queries, extensions (sitelinks, callouts, structured snippets), audiences, asset uploads, generic mutate |
 | **TikTok Ads MCP** | `https://tiktok-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, ads, identities, image and video upload, audience and creative management, insights |
 | **Snap Ads MCP** | `https://snap-ads.mcp.pipeboard.co/` | **37 tools** — ad accounts, campaigns, ad squads, ads, creatives, media upload, insights |
 | **Reddit Ads MCP** | `https://reddit-ads.mcp.pipeboard.co/` | **33 tools** — accounts, campaigns, ad groups, ads, performance reports |
@@ -172,6 +173,17 @@ If your agent prefers shell commands over JSON-RPC, the [Pipeboard CLI](https://
 🚀 **We strongly recommend using [Remote MCP](https://pipeboard.co) instead** - it's faster, more reliable, and requires no technical setup.
 
 Meta Ads MCP also supports a local streamable HTTP transport, allowing you to run it as a standalone HTTP API for web applications and custom integrations. See **[Streamable HTTP Setup Guide](STREAMABLE_HTTP_SETUP.md)** for complete instructions.
+
+## Google Ads app ads
+
+Self-hosted `google_ads_mcp` creates App ads and attaches image and YouTube assets on an existing App campaign ad group:
+
+- `create_app_ad` creates an App ad (`ad.app_ad`). New ads stay `PAUSED` unless `status` is `ENABLED`.
+- `upload_image_asset` creates an IMAGE asset from a PNG or JPG (max 5 MB; ratio 1.91:1, 1:1, or 4:5) and returns its resource name.
+- `update_app_ad_images` replaces or appends up to 20 images. Only `app_ad.images` is updated.
+- `create_youtube_video_asset` takes an 11-character YouTube id or a `youtube.com` / `youtu.be` / `shorts` URL. An existing `YOUTUBE_VIDEO` asset for that id in the account is reused; otherwise one is created. `name` is optional.
+- `update_app_ad_videos` replaces or appends up to 20 videos. Each entry can be an id, a URL, or an asset resource name. `append` dedupes. Only `app_ad.youtube_videos` is updated, so images, headlines, descriptions, and status stay as they are.
+- `get_ads` returns App ad headlines, descriptions, images, and `youtube_videos`.
 
 ## Meta Posts MCP (Facebook + Instagram organic)
 
