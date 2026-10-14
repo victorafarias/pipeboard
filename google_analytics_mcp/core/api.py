@@ -190,34 +190,6 @@ def json_call_tool_result(value: Any, *, list_result: bool = False) -> CallToolR
         structured = {"result": parsed}
         is_error = False
 
-    # #region agent log
-    try:
-        _keys = list(structured)[:20] if isinstance(structured, dict) else []
-        _result = structured.get("result") if isinstance(structured, dict) else None
-        with open(r"c:\Users\Administrator\pipeboard\debug-acd752.log", "a", encoding="utf-8") as _log:
-            _log.write(
-                json.dumps(
-                    {
-                        "sessionId": "acd752",
-                        "hypothesisId": "A",
-                        "location": "google_analytics_mcp/core/api.py:json_call_tool_result",
-                        "message": "structuredContent shape",
-                        "data": {
-                            "list_result": list_result,
-                            "parsed_type": type(parsed).__name__,
-                            "structured_keys": _keys,
-                            "has_result": isinstance(structured, dict) and "result" in structured,
-                            "result_type": type(_result).__name__,
-                        },
-                        "timestamp": int(__import__("time").time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
-
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         structuredContent=structured,
